@@ -1,0 +1,34 @@
+{
+  "name": "botthink",
+  "version": "2.1.8",
+  "description": "Discord bot migrated from Python to JavaScript",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "dev": "nodemon main.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "dotenv": "^17.4.2",
+    "koreanbots": "^3.2.1",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=16.6.0"
+  },
+  "nodemonConfig": {
+    "ignore": [
+      "*.json",
+      "*.db*",
+      "*.md",
+      "node_modules",
+      "xiadb.db",
+      "xiadb.db-journal",
+      "xiadb.db-wal",
+      "xiadb.db-shm"
+    ]
+  }
+}
