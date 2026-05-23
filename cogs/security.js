@@ -148,67 +148,6 @@ module.exports = {
     },
     {
       data: new SlashCommandBuilder()
-        .setName('자동역할')
-        .setDescription('신규 입장 멤버에게 자동으로 부여할 역할을 지정합니다.')
-        .addSubcommand(subcommand =>
-          subcommand.setName('설정')
-            .setDescription('신규 멤버에게 자동 부여할 역할을 설정합니다.')
-            .addRoleOption(option => option.setName('역할').setDescription('자동 부여할 역할').setRequired(true))
-        )
-        .addSubcommand(subcommand =>
-          subcommand.setName('삭제')
-            .setDescription('신규 멤버 자동 역할 부여 설정을 삭제합니다.')
-        )
-        .addSubcommand(subcommand =>
-          subcommand.setName('조회')
-            .setDescription('현재 설정된 신규 멤버 자동 부여 역할을 확인합니다.')
-        ),
-      async execute(interaction) {
-        if (!(await checkAdminPermission(interaction.member))) {
-          return interaction.reply({ embeds: [PERMISSION_ERROR_EMBED()], ephemeral: true });
-        }
-        const subcommand = interaction.options.getSubcommand();
-        const guildId = interaction.guildId.toString();
-
-        if (subcommand === '설정') {
-          const role = interaction.options.getRole('역할');
-          const warningMsg = getRolePermissionWarning(interaction.guild, role);
-          await new Promise((resolve) => {
-            db.run(
-              "INSERT OR REPLACE INTO server_join_auto_roles (guild_id, role_id) VALUES (?, ?)",
-              [guildId, role.id],
-              () => resolve()
-            );
-          });
-          return interaction.reply(`신규 입장 멤버에게 자동으로 부여할 역할이 **${role.name}**(으)로 설정되었습니다.${warningMsg}`);
-        } 
-        
-        else if (subcommand === '삭제') {
-          await new Promise((resolve) => {
-            db.run(
-              "DELETE FROM server_join_auto_roles WHERE guild_id = ?",
-              [guildId],
-              () => resolve()
-            );
-          });
-          return interaction.reply(`신규 멤버 자동 역할 부여 설정이 삭제되었습니다.`);
-        } 
-        
-        else if (subcommand === '조회') {
-          db.get("SELECT role_id FROM server_join_auto_roles WHERE guild_id = ?", [guildId], (err, row) => {
-            if (row && row.role_id) {
-              const role = interaction.guild.roles.cache.get(row.role_id);
-              if (role) {
-                return interaction.reply(`현재 설정된 신규 멤버 자동 부여 역할은 **${role.name}** (${role.id}) 입니다.`);
-              }
-            }
-            return interaction.reply(`현재 설정된 신규 멤버 자동 부여 역할이 없습니다. \`/자동역할 설정\`으로 등록할 수 있습니다.`);
-          });
-        }
-      }
-    },
-    {
-      data: new SlashCommandBuilder()
         .setName('입장자동역할')
         .setDescription('신규 입장 멤버에게 자동으로 부여할 기본 역할을 지정합니다.')
         .addSubcommand(subcommand =>
@@ -455,7 +394,7 @@ module.exports = {
       if (!member.guild) return;
       const guildId = member.guild.id;
 
-      // 1. Check join auto role (자동역할)
+      // 1. Check join auto role (입장자동역할)
       db.get("SELECT role_id FROM server_join_auto_roles WHERE guild_id = ?", [guildId], async (err, row) => {
         if (!err && row && row.role_id) {
           let role = member.guild.roles.cache.get(row.role_id);
@@ -464,7 +403,7 @@ module.exports = {
           }
           if (role) {
             try {
-              await member.roles.add(role, "신입 멤버 자동 역할 부여");
+              await member.roles.add(role, "신입 멤버 입장 자동 역할 부여");
               
               // Log the role assignment if entry/exit logging is configured
               db.get("SELECT channels FROM log_settings WHERE guild_id = ?", [guildId], async (err2, logRow) => {
@@ -479,8 +418,8 @@ module.exports = {
                       }
                       if (logChannel) {
                         const embed = new EmbedBuilder()
-                          .setTitle("🏷️ 신규 멤버 자동 역할 부여")
-                          .setDescription(`${member} (${member.user.tag}) 님에게 서버 자동 부여 역할인 **${role.name}**이(가) 정상 부여되었습니다.`)
+                          .setTitle("🏷️ 신규 멤버 입장 자동 역할 부여")
+                          .setDescription(`${member} (${member.user.tag}) 님에게 서버 입장 자동 부여 역할인 **${role.name}**이(가) 정상 부여되었습니다.`)
                           .setColor(MAIN_COLOR)
                           .setTimestamp();
                         await logChannel.send({ embeds: [embed] }).catch(() => null);

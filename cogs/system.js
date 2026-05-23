@@ -265,9 +265,9 @@ module.exports = {
                       `# 🗂️ 로그 전송 대상 유형 선택 (3/4 단계)\n\n` +
                       `약관 동의가 완료되었습니다! 이제 로그가 기록될 채널 방식을 선택해 주세요.\n\n` +
                       `**1. 일반 채널로 설정 (추천)**\n` +
-                      `서버 내에 **7개의 독립된 채널**을 생성하여 직관적이고 분리된 관리가 가능합니다.\n\n` +
+                      `서버 내에 **8개의 독립된 채널**을 생성하여 직관적이고 분리된 관리가 가능합니다.\n\n` +
                       `**2. 스레드로 설정 (깔끔)**\n` +
-                      `하나의 상위 채널 **#시아-로그-저장소** 아래에 **7개의 프라이빗 스레드**를 생성하여 서버 채널 목록을 매우 깔끔하게 유지합니다.`
+                      `하나의 상위 채널 **#시아-로그-저장소** 아래에 **8개의 프라이빗 스레드**를 생성하여 서버 채널 목록을 매우 깔끔하게 유지합니다.`
                     )
                   )
               );
@@ -302,14 +302,15 @@ module.exports = {
                   .addTextDisplayComponents(
                     new TextDisplayBuilder().setContent(
                       `# 🛠️ 일반 로그 채널 생성 (4/4 단계)\n\n` +
-                      `이제 마지막 단계로, 시아가 서버 내에 전용 카테고리 **[시아 시스템 로그]**와 각각의 기능에 맞는 **7개의 로그 채널**을 자동으로 개설합니다.\n\n` +
+                      `이제 마지막 단계로, 시아가 서버 내에 전용 카테고리 **[시아 시스템 로그]**와 각각의 기능에 맞는 **8개의 로그 채널**을 자동으로 개설합니다.\n\n` +
                       `• 💬 \`sia-채팅-로그\` : 메시지 수정/삭제 실시간 추적\n` +
                       `• 🔊 \`sia-음성-로그\` : 음성 채널 입장/퇴장/이동 모니터링\n` +
                       `• 🚪 \`sia-입퇴장-로그\` : 멤버 서버 입장 및 퇴장 기록\n` +
                       `• 🛡️ \`sia-차단-로그\` : 멤버 서버 차단 처리 로그\n` +
                       `• 🧵 \`sia-스레드-로그\` : 스레드 생성, 삭제 및 설정 변경 감지\n` +
                       `• 🎭 \`sia-반응-로그\` : 메시지 반응 추가/삭제 실시간 추적\n` +
-                      `• 🏷️ \`sia-역할-로그\` : 역할 생성/삭제/변경 및 유저 역할 변경 감지`
+                      `• 🏷️ \`sia-역할-로그\` : 역할 생성/삭제/변경 및 유저 역할 변경 감지\n` +
+                      `• 🔇 \`sia-타임아웃-로그\` : 멤버 활동 제한(타임아웃) 및 해제 실시간 추적`
                     )
                   )
               );
@@ -340,14 +341,15 @@ module.exports = {
                   .addTextDisplayComponents(
                     new TextDisplayBuilder().setContent(
                       `# 🛠️ 로그 프라이빗 스레드 생성 (4/4 단계)\n\n` +
-                      `이제 마지막 단계로, 시아가 서버 내에 통합 보관 채널 **#시아-로그-저장소**를 생성하고 그 아래에 **7개의 프라이빗 스레드**를 자동으로 개설합니다.\n\n` +
+                      `이제 마지막 단계로, 시아가 서버 내에 통합 보관 채널 **#시아-로그-저장소**를 생성하고 그 아래에 **8개의 프라이빗 스레드**를 자동으로 개설합니다.\n\n` +
                       `• 💬 \`sia-채팅-로그\` : 메시지 수정/삭제 실시간 추적\n` +
                       `• 🔊 \`sia-음성-로그\` : 음성 채널 입장/퇴장/이동 모니터링\n` +
                       `• 🚪 \`sia-입퇴장-로그\` : 멤버 서버 입장 및 퇴장 기록\n` +
                       `• 🛡️ \`sia-차단-로그\` : 멤버 서버 차단 처리 로그\n` +
                       `• 🧵 \`sia-스레드-로그\` : 스레드 생성, 삭제 및 설정 변경 감지\n` +
                       `• 🎭 \`sia-반응-로그\` : 메시지 반응 추가/삭제 실시간 추적\n` +
-                      `• 🏷️ \`sia-역할-로그\` : 역할 생성/삭제/변경 및 유저 역할 변경 감지`
+                      `• 🏷️ \`sia-역할-로그\` : 역할 생성/삭제/변경 및 유저 역할 변경 감지\n` +
+                      `• 🔇 \`sia-타임아웃-로그\` : 멤버 활동 제한(타임아웃) 및 해제 실시간 추적`
                     )
                   )
               );
@@ -425,6 +427,8 @@ module.exports = {
             const threadChan = await createChan('sia-스레드-로그');
             const reactionChan = await createChan('sia-반응-로그');
             const roleChan = await createChan('sia-역할-로그');
+            const timeoutChan = await createChan('sia-타임아웃-로그');
+            const sanctionChan = await createChan('sia-제재-로그');
 
             // 3. Save configurations into DB
             let guildData = loggingCog.logSettingsCache.get(guild.id.toString());
@@ -442,6 +446,8 @@ module.exports = {
             guildData.channels['log_thread'] = serialize_channel(threadChan);
             guildData.channels['log_reaction'] = serialize_channel(reactionChan);
             guildData.channels['log_role'] = serialize_channel(roleChan);
+            guildData.channels['log_timeout'] = serialize_channel(timeoutChan);
+            guildData.channels['log_sanction'] = serialize_channel(sanctionChan);
 
             loggingCog.saveLogSettings(guild.id, guildData);
 
@@ -456,7 +462,7 @@ module.exports = {
                   .addTextDisplayComponents(
                     new TextDisplayBuilder().setContent(
                       `# 👑 시아 자동 초기 설정이 완료되었습니다!\n\n` +
-                      `축하합니다! **[시아 시스템 로그]** 카테고리 개설 및 **7개의 로깅 연동 채널**이 모두 성공적으로 설정되었습니다. 🎉\n\n` +
+                      `축하합니다! **[시아 시스템 로그]** 카테고리 개설 및 **9개의 로깅 연동 채널**이 모두 성공적으로 설정되었습니다. 🎉\n\n` +
                       `### 📊 지정된 채널 목록:\n` +
                       `• 💬 채팅 로그: ${chatChan.toString()}\n` +
                       `• 🔊 음성 로그: ${voiceChan.toString()}\n` +
@@ -464,7 +470,9 @@ module.exports = {
                       `• 🛡️ 차단 로그: ${banChan.toString()}\n` +
                       `• 🧵 스레드 로그: ${threadChan.toString()}\n` +
                       `• 🎭 반응 로그: ${reactionChan.toString()}\n` +
-                      `• 🏷️ 역할 로그: ${roleChan.toString()}\n\n` +
+                      `• 🏷️ 역할 로그: ${roleChan.toString()}\n` +
+                      `• 🔇 타임아웃 로그: ${timeoutChan.toString()}\n` +
+                      `• ⚖️ 제재 로그: ${sanctionChan.toString()}\n\n` +
                       `*보안 상 모든 로그 채널은 일반 유저가 볼 수 없도록 비공개로 생성되었습니다. 필요에 따라 관리자 역할 권한을 설정해 주세요.*`
                     )
                   )
@@ -536,6 +544,12 @@ module.exports = {
             const roleChan = await createThread('sia-역할-로그');
             await roleChan.send({ content: `📌 **sia-역할-로그** 스레드가 생성 및 활성화되었습니다.` }).catch(() => { });
 
+            const timeoutChan = await createThread('sia-타임아웃-로그');
+            await timeoutChan.send({ content: `📌 **sia-타임아웃-로그** 스레드가 생성 및 활성화되었습니다.` }).catch(() => { });
+
+            const sanctionChan = await createThread('sia-제재-로그');
+            await sanctionChan.send({ content: `📌 **sia-제재-로그** 스레드가 생성 및 활성화되었습니다.` }).catch(() => { });
+
             // Send a premium, highly detailed portal directory message directly to the parent channel!
             const portalEmbed = new EmbedBuilder()
               .setTitle('📁 시아 통합 로그 저장소 포털')
@@ -550,7 +564,9 @@ module.exports = {
                 { name: '🛡️ 유저 차단 로그', value: `• ${banChan.toString()} (\`sia-차단-로그\`)`, inline: true },
                 { name: '🧵 시스템 스레드 로그', value: `• ${threadChan.toString()} (\`sia-스레드-로그\`)`, inline: true },
                 { name: '🎭 반응 로그', value: `• ${reactionChan.toString()} (\`sia-반응-로그\`)`, inline: true },
-                { name: '🏷️ 역할 로그', value: `• ${roleChan.toString()} (\`sia-역할-로그\`)`, inline: true }
+                { name: '🏷️ 역할 로그', value: `• ${roleChan.toString()} (\`sia-역할-로그\`)`, inline: true },
+                { name: '🔇 실시간 타임아웃 로그', value: `• ${timeoutChan.toString()} (\`sia-타임아웃-로그\`)`, inline: true },
+                { name: '⚖️ 실시간 제재 로그', value: `• ${sanctionChan.toString()} (\`sia-제재-로그\`)`, inline: true }
               )
               .setColor(MAIN_COLOR)
               .setTimestamp()
@@ -574,6 +590,8 @@ module.exports = {
             guildData.channels['log_thread'] = serialize_channel(threadChan);
             guildData.channels['log_reaction'] = serialize_channel(reactionChan);
             guildData.channels['log_role'] = serialize_channel(roleChan);
+            guildData.channels['log_timeout'] = serialize_channel(timeoutChan);
+            guildData.channels['log_sanction'] = serialize_channel(sanctionChan);
 
             loggingCog.saveLogSettings(guild.id, guildData);
 
@@ -588,7 +606,7 @@ module.exports = {
                   .addTextDisplayComponents(
                     new TextDisplayBuilder().setContent(
                       `# 👑 시아 자동 초기 설정이 완료되었습니다!\n\n` +
-                      `축하합니다! **#sia-로그-저장소** 통합 보관 채널 및 **7개의 프라이빗 로깅 스레드**가 모두 성공적으로 설정되었습니다. 🎉\n\n` +
+                      `축하합니다! **#sia-로그-저장소** 통합 보관 채널 및 **9개의 프라이빗 로깅 스레드**가 모두 성공적으로 설정되었습니다. 🎉\n\n` +
                       `### 📊 지정된 스레드 목록:\n` +
                       `• 💬 채팅 로그: ${chatChan.toString()}\n` +
                       `• 🔊 음성 로그: ${voiceChan.toString()}\n` +
@@ -596,7 +614,9 @@ module.exports = {
                       `• 🛡️ 차단 로그: ${banChan.toString()}\n` +
                       `• 🧵 스레드 로그: ${threadChan.toString()}\n` +
                       `• 🎭 반응 로그: ${reactionChan.toString()}\n` +
-                      `• 🏷️ 역할 로그: ${roleChan.toString()}\n\n` +
+                      `• 🏷️ 역할 로그: ${roleChan.toString()}\n` +
+                      `• 🔇 타임아웃 로그: ${timeoutChan.toString()}\n` +
+                      `• ⚖️ 제재 로그: ${sanctionChan.toString()}\n\n` +
                       `*보안 상 모든 로그 스레드는 일반 유저가 볼 수 없도록 비공개로 생성되었습니다. 필요에 따라 관리자 역할 권한을 설정해 주세요.*`
                     )
                   )

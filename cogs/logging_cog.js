@@ -40,9 +40,10 @@ function saveLogSettings(guildId, data) {
   logSettingsCache.set(gId, data);
   const channelsStr = JSON.stringify(data.channels || {});
   const excludedStr = JSON.stringify(data.excluded_channels || []);
+  const purgeFormat = data.purge_format || 'html';
   db.run(
-    "INSERT OR REPLACE INTO log_settings (guild_id, channels, excluded_channels) VALUES (?, ?, ?)",
-    [gId, channelsStr, excludedStr],
+    "INSERT OR REPLACE INTO log_settings (guild_id, channels, excluded_channels, purge_format) VALUES (?, ?, ?, ?)",
+    [gId, channelsStr, excludedStr, purgeFormat],
     (err) => {
       if (err) console.error("[DB log_settings] Save error:", err);
     }
@@ -98,6 +99,10 @@ db.serialize(() => {
     excluded_channels TEXT
   )`);
 
+  db.run("ALTER TABLE log_settings ADD COLUMN purge_format TEXT DEFAULT 'html'", (err) => {
+    // Column already exists, safe to ignore
+  });
+
   // Index channel_id to optimize historical scan queries
   db.run(`CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id)`);
 
@@ -129,7 +134,8 @@ db.serialize(() => {
       for (const row of rows) {
         logSettingsCache.set(row.guild_id, {
           channels: JSON.parse(row.channels || '{}'),
-          excluded_channels: JSON.parse(row.excluded_channels || '[]')
+          excluded_channels: JSON.parse(row.excluded_channels || '[]'),
+          purge_format: row.purge_format || 'html'
         });
       }
       console.log(`[Cache] Loaded log settings for ${logSettingsCache.size} guilds from SQLite database.`);
@@ -413,7 +419,9 @@ async function getLogChannel(client, guildId, logType) {
             'log_thread': '🧵-스레드-로그',
             'log_update': '🔄-업데이트-로그',
             'log_reaction': '🎭-반응-로그',
-            'log_role': '🏷️-역할-로그'
+            'log_role': '🏷️-역할-로그',
+            'log_timeout': '🔇-타임아웃-로그',
+            'log_sanction': '⚖️-제재-로그'
           };
           const threadName = logTypeLabels[logType] || `${logType}-로그`;
           
@@ -436,6 +444,23 @@ async function getLogChannel(client, guildId, logType) {
             if (thread) {
               await ch.send({
                 content: `**[${client.user.username}]**이 **[${threadName}]**을 생성했어요.\nㄴ ${thread.toString()}`
+              }).catch(() => null);
+
+              const logTypeNames = {
+                'log_chat': '채팅 로그',
+                'log_voice': '음성 로그',
+                'log_enter_exit': '입/퇴장 로그',
+                'log_ban': '차단 로그',
+                'log_thread': '스레드 로그',
+                'log_update': '업데이트 로그',
+                'log_reaction': '반응 로그',
+                'log_role': '역할 로그',
+                'log_timeout': '타임아웃 로그',
+                'log_sanction': '제재 로그'
+              };
+              const logTypeName = logTypeNames[logType] || `${logType} 로그`;
+              await thread.send({
+                content: `📌 **[${logTypeName}]**가 생성되었습니다.`
               }).catch(() => null);
             }
           }
@@ -466,6 +491,9 @@ async function logPurgeInternal(client, messages, channel, executor = null, reas
 
   const channelId = channel?.id || messages.first()?.channel?.id;
   if (isChannelExcluded(guild.id, channelId)) return;
+
+  const guildData = logSettingsCache.get(guild.id.toString());
+  const purgeFormat = (guildData && guildData.purge_format) || 'html';
 
   const logChannel = await getLogChannel(client, guild.id, 'log_chat');
   if (!logChannel) {
@@ -904,14 +932,101 @@ async function logPurgeInternal(client, messages, channel, executor = null, reas
     </html>
   `;
 
-  const buffer = Buffer.from(htmlContent, 'utf-8');
-  const fileAttachment = new AttachmentBuilder(buffer, { name: `purge-log-${channel?.name || "channel"}.html` });
+  let fileBuffer;
+  let fileName;
+  let fileDescTip = "";
+
+  if (purgeFormat === 'txt') {
+    // TXT 포맷 생성 (모바일 가독성 최적화)
+    let txtContent = `[시아 삭제 메시지 아카이브 - #${channel?.name || "알수없음"}]\n`;
+    txtContent += `삭제된 메시지: ${messages.size}개\n`;
+    txtContent += `발생 시각: ${formatKST(new Date())}\n`;
+    txtContent += `============================================================\n\n`;
+
+    for (const msg of msgArray) {
+      const author = msg.author;
+      const displayName = msg.member?.displayName || author?.username || "알 수 없는 유저";
+      const tag = author ? author.tag : "0000";
+      const authorId = author ? author.id : "0";
+      
+      const date = new Date(msg.createdAt || Date.now());
+      const kstOffset = 9 * 60 * 60 * 1000;
+      const kstDate = new Date(date.getTime() + kstOffset);
+      const timeStr = kstDate.toISOString().replace('T', ' ').substring(0, 19);
+
+      txtContent += `[${timeStr}] ${displayName} (${tag} / ID: ${authorId})\n`;
+      txtContent += `내용: ${msg.content || "(내용 없음)"}\n`;
+
+      if (msg.attachments && msg.attachments.size > 0) {
+        msg.attachments.forEach(att => {
+          txtContent += `📎 첨부파일: ${att.name} (${(att.size / 1024).toFixed(1)} KB) - URL: ${att.url}\n`;
+        });
+      }
+
+      if (msg.embeds && msg.embeds.length > 0) {
+        txtContent += `🎨 임베드 데이터:\n`;
+        msg.embeds.forEach((emb, i) => {
+          txtContent += `  [임베드 #${i + 1}]\n`;
+          if (emb.title) txtContent += `  - 제목: ${emb.title}\n`;
+          if (emb.description) txtContent += `  - 설명: ${emb.description}\n`;
+          if (emb.fields && emb.fields.length > 0) {
+            emb.fields.forEach(f => {
+              txtContent += `  - 필드: ${f.name} => ${f.value}\n`;
+            });
+          }
+        });
+      }
+      txtContent += `------------------------------------------------------------\n`;
+    }
+    txtContent += `============================================================\n`;
+    fileBuffer = Buffer.from(txtContent, 'utf-8');
+    fileName = `purge-log-${channel?.name || "channel"}.txt`;
+    fileDescTip = "💡 **첨부된 TXT 파일**을 다운로드하면 스마트폰 등 모바일 텍스트 뷰어 기기에서도 깨짐 현상 없이 아주 편하게 삭제된 대화 기록을 읽을 수 있습니다. 📱";
+
+  } else if (purgeFormat === 'json') {
+    // JSON 포맷 생성 (개발자용 구조화 데이터)
+    const jsonData = {
+      channel: channel?.name || "unknown",
+      channel_id: channelId,
+      purge_count: messages.size,
+      logged_at: new Date().toISOString(),
+      messages: msgArray.map(msg => ({
+        message_id: msg.id,
+        author: msg.author ? {
+          id: msg.author.id,
+          username: msg.author.username,
+          tag: msg.author.tag,
+          bot: msg.author.bot
+        } : null,
+        content: msg.content,
+        created_at: msg.createdAt,
+        attachments: msg.attachments ? Array.from(msg.attachments.values()).map(a => ({
+          name: a.name,
+          url: a.url,
+          size_bytes: a.size,
+          content_type: a.contentType
+        })) : [],
+        embeds: msg.embeds ? msg.embeds.map(e => e.data || e) : []
+      }))
+    };
+    fileBuffer = Buffer.from(JSON.stringify(jsonData, null, 2), 'utf-8');
+    fileName = `purge-log-${channel?.name || "channel"}.json`;
+    fileDescTip = "💡 **첨부된 JSON 파일**을 다운로드하면 대량 삭제된 원본 백업 데이터를 파싱 및 기계 판독할 수 있는 원시(Raw) 구조 데이터로 관리할 수 있습니다. 💻";
+
+  } else {
+    // HTML 포맷 생성 (기존 디스코드 비주얼 스타일)
+    fileBuffer = Buffer.from(htmlContent, 'utf-8');
+    fileName = `purge-log-${channel?.name || "channel"}.html`;
+    fileDescTip = "💡 **첨부된 HTML 파일**을 다운로드하여 브라우저로 열면 디스코드와 완벽하게 동일한 미려한 디자인 비주얼로 이미지와 임베드 데이터를 편리하게 읽을 수 있습니다. ✨";
+  }
+
+  const fileAttachment = new AttachmentBuilder(fileBuffer, { name: fileName });
 
   const embed = new EmbedBuilder()
     .setTitle(`${guild.name} 메세지 대량 삭제 로그`)
     .setColor(ERROR_COLOR);
 
-  let desc = `${channel?.toString() || "채널"}에서 메세지 **${messages.size}개**가 대량 삭제되었습니다.\n\n💡 **첨부된 HTML 파일**을 다운로드하여 열면 디스코드와 동일한 비주얼로 전체 대화 이력(글쓴이, 본문, 이미지, 파일, 임베드 등)을 편하게 확인할 수 있습니다.`;
+  let desc = `${channel?.toString() || "채널"}에서 메세지 **${messages.size}개**가 대량 삭제되었습니다.\n\n${fileDescTip}`;
 
   if (executor) {
     embed.addFields(
@@ -947,14 +1062,32 @@ module.exports = {
     {
       data: new SlashCommandBuilder()
         .setName('로그')
-        .setDescription('로그 채널을 설정합니다.')
-        .addStringOption(option =>
-          option.setName('방식')
-            .setDescription('로그 기록 방식 선택 (일반 채널 로그 / 스레드 로그)')
-            .setRequired(true)
-            .addChoices(
-              { name: '일반 채널 로그', value: 'normal' },
-              { name: '스레드 로그', value: 'thread' }
+        .setDescription('실시간 로그 및 대량 삭제 방식을 설정합니다.')
+        .addSubcommand(subcommand =>
+          subcommand.setName('채널')
+            .setDescription('실시간 이벤트를 로깅할 채널 및 방식을 지정합니다.')
+            .addStringOption(option =>
+              option.setName('방식')
+                .setDescription('로그 기록 방식 선택 (일반 채널 로그 / 스레드 로그)')
+                .setRequired(true)
+                .addChoices(
+                  { name: '일반 채널 로그', value: 'normal' },
+                  { name: '스레드 로그', value: 'thread' }
+                )
+            )
+        )
+        .addSubcommand(subcommand =>
+          subcommand.setName('대량삭제')
+            .setDescription('메시지 대량 삭제 로그의 보존 표시 파일 포맷을 변경합니다.')
+            .addStringOption(option =>
+              option.setName('방식')
+                .setDescription('내역 저장 포맷 방식 (TXT / HTML / JSON)')
+                .setRequired(true)
+                .addChoices(
+                  { name: 'HTML (기존 미려한 디스코드 비주얼)', value: 'html' },
+                  { name: 'TXT (모바일 가독성 극대화 최적화)', value: 'txt' },
+                  { name: 'JSON (개발자용 구조화 데이터)', value: 'json' }
+                )
             )
         ),
       async execute(interaction) {
@@ -971,6 +1104,34 @@ module.exports = {
             content: "❌ **개인정보 수집 및 메시지 동기화 약관에 동의하지 않았습니다.**\n\n로그 설정 기능을 이용하려면 먼저 `/동의 메시지수집` 명령어를 실행하여 서버 관리자(Administrator)가 수집 약관에 동의해 주셔야 합니다.",
             ephemeral: true
           });
+        }
+
+        const subcommand = interaction.options.getSubcommand();
+        const guildId = interaction.guildId.toString();
+
+        if (subcommand === '대량삭제') {
+          const format = interaction.options.getString('방식');
+          
+          let guildData = logSettingsCache.get(guildId);
+          if (!guildData) {
+            guildData = { channels: {}, excluded_channels: [], purge_format: 'html' };
+          }
+          guildData.purge_format = format;
+          saveLogSettings(guildId, guildData);
+
+          const labelMap = {
+            'html': 'HTML (디스코드 비주얼 스타일)',
+            'txt': 'TXT (모바일 최적화 텍스트)',
+            'json': 'JSON (구조화 백업 데이터)'
+          };
+
+          const embed = new EmbedBuilder()
+            .setTitle('📁 대량 삭제 보존 포맷 변경 완료')
+            .setDescription(`이제 메시지 대량 삭제 발생 시, 아카이브 파일이 **${labelMap[format]}** 포맷으로 생성되어 기록됩니다.`)
+            .setColor(MAIN_COLOR)
+            .setTimestamp();
+
+          return interaction.reply({ embeds: [embed] });
         }
 
         const method = interaction.options.getString('방식');
@@ -1003,7 +1164,9 @@ module.exports = {
             new StringSelectMenuOptionBuilder().setLabel('스레드 로그').setValue('log_thread').setDescription('스레드 생성/삭제/업데이트 실시간 로깅').setEmoji('🧵'),
             new StringSelectMenuOptionBuilder().setLabel('업데이트 로그').setValue('log_update').setDescription('서버 및 채널 설정 변경 실시간 로깅').setEmoji('🔄'),
             new StringSelectMenuOptionBuilder().setLabel('반응 로그').setValue('log_reaction').setDescription('메시지 반응 추가/삭제 실시간 로깅').setEmoji('🎭'),
-            new StringSelectMenuOptionBuilder().setLabel('역할 로그').setValue('log_role').setDescription('역할 생성/삭제/설정 변경 및 유저 역할 변경 실시간 로깅').setEmoji('🏷️')
+            new StringSelectMenuOptionBuilder().setLabel('역할 로그').setValue('log_role').setDescription('역할 생성/삭제/설정 변경 및 유저 역할 변경 실시간 로깅').setEmoji('🏷️'),
+            new StringSelectMenuOptionBuilder().setLabel('타임아웃 로그').setValue('log_timeout').setDescription('멤버 타임아웃(활동 제한) 및 해제 실시간 로깅').setEmoji('🔇'),
+            new StringSelectMenuOptionBuilder().setLabel('제재 로그').setValue('log_sanction').setDescription('유저 제재(경고 부여, 경고 차감/삭제, 초기화) 실시간 로깅').setEmoji('⚖️')
           );
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
@@ -1021,6 +1184,7 @@ module.exports = {
             return i.reply({ content: '설정은 명령어를 사용한 관리자만 조작 가능합니다.', ephemeral: true });
           }
 
+          if (!i.isStringSelectMenu()) return;
           if (i.customId !== 'log_type_select') return;
 
           const logType = i.values[0];
@@ -1032,10 +1196,11 @@ module.exports = {
             'log_thread': '스레드',
             'log_update': '업데이트',
             'log_reaction': '반응',
-            'log_role': '역할'
+            'log_role': '역할',
+            'log_timeout': '타임아웃',
+            'log_sanction': '제재'
           };
           const label = labelMap[logType];
-          const guildId = interaction.guildId.toString();
 
           let guildData = logSettingsCache.get(guildId);
           if (!guildData) {
@@ -1097,6 +1262,10 @@ module.exports = {
                   method: method
                 };
                 saveLogSettings(guildId, guildData);
+
+                if (method === 'thread') {
+                  await getLogChannel(interaction.client, guildId, logType);
+                }
 
                 const timeStr = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) + ' (KST)';
                 
@@ -1169,6 +1338,10 @@ module.exports = {
               method: method
             };
             saveLogSettings(guildId, guildData);
+
+            if (method === 'thread') {
+              await getLogChannel(interaction.client, guildId, logType);
+            }
 
             const timeStr = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) + ' (KST)';
             
@@ -1261,6 +1434,8 @@ module.exports = {
             new StringSelectMenuOptionBuilder().setLabel('업데이트 로그 해제').setValue('del_update').setDescription('업데이트 로그 연동 해제').setEmoji('🔄'),
             new StringSelectMenuOptionBuilder().setLabel('반응 로그 해제').setValue('del_reaction').setDescription('반응 로그 연동 해제').setEmoji('🎭'),
             new StringSelectMenuOptionBuilder().setLabel('역할 로그 해제').setValue('del_role').setDescription('역할 로그 연동 해제').setEmoji('🏷️'),
+            new StringSelectMenuOptionBuilder().setLabel('타임아웃 로그 해제').setValue('del_timeout').setDescription('타임아웃 로그 연동 해제').setEmoji('🔇'),
+            new StringSelectMenuOptionBuilder().setLabel('제재 로그 해제').setValue('del_sanction').setDescription('제재 로그 연동 해제').setEmoji('⚖️'),
             new StringSelectMenuOptionBuilder().setLabel('로그 전체 삭제 (설정 초기화)').setValue('del_all').setDescription('모든 로그 채널 설정을 일괄 해제합니다.').setEmoji('🗑️')
           );
 
@@ -1279,6 +1454,7 @@ module.exports = {
             return i.reply({ content: '삭제는 명령어를 사용한 관리자만 조작 가능합니다.', ephemeral: true });
           }
 
+          if (!i.isStringSelectMenu()) return;
           if (i.customId !== 'log_delete_select') return;
 
           const delType = i.values[0];
@@ -1324,7 +1500,9 @@ module.exports = {
             'del_thread': 'log_thread',
             'del_update': 'log_update',
             'del_reaction': 'log_reaction',
-            'del_role': 'log_role'
+            'del_role': 'log_role',
+            'del_timeout': 'log_timeout',
+            'del_sanction': 'log_sanction'
           };
           const logType = logTypeMap[delType];
 
@@ -1336,7 +1514,9 @@ module.exports = {
             'log_thread': '스레드',
             'log_update': '업데이트',
             'log_reaction': '반응',
-            'log_role': '역할'
+            'log_role': '역할',
+            'log_timeout': '타임아웃',
+            'log_sanction': '제재'
           };
           const label = labelMap[logType];
 
@@ -1413,11 +1593,22 @@ module.exports = {
           'log_thread': '🧵 스레드 로그',
           'log_update': '🔄 업데이트 로그',
           'log_reaction': '🎭 반응 로그',
-          'log_role': '🏷️ 역할 로그'
+          'log_role': '🏷️ 역할 로그',
+          'log_timeout': '🔇 타임아웃 로그',
+          'log_sanction': '⚖️ 제재 로그'
+        };
+
+        const purgeFormat = (guildData && guildData.purge_format) || 'html';
+        const formatLabelMap = {
+          'html': 'HTML (디스코드 비주얼 스타일)',
+          'txt': 'TXT (모바일 가독성 최적화)',
+          'json': 'JSON (구조화 백업 데이터)'
         };
 
         let activeCount = 0;
-        let desc = '현재 설정된 실시간 시스템 로그 채널 목록입니다.\n\n';
+        let desc = `현재 설정된 실시간 시스템 로그 채널 목록입니다.\n\n` +
+          `📁 **대량 삭제 아카이브 방식**\n• \`${formatLabelMap[purgeFormat]}\` (\`/로그 대량삭제\`로 변경 가능)\n\n` +
+          `========================================\n\n`;
 
         for (const [key, label] of Object.entries(labels)) {
           let chanMention = '❌ 미설정';
@@ -2135,10 +2326,10 @@ module.exports = {
         .setColor(color);
 
       if (before.channelId) {
-        embed.addFields({ name: "이전 음성 채널", value: `<#${before.channelId}>`, inline: false });
+        embed.addFields({ name: "이전 음성 채널", value: `<#${before.channelId}> (ID: \`${before.channelId}\`)`, inline: false });
       }
       if (after.channelId) {
-        embed.addFields({ name: "현재 음성 채널", value: `<#${after.channelId}>`, inline: false });
+        embed.addFields({ name: "현재 음성 채널", value: `<#${after.channelId}> (ID: \`${after.channelId}\`)`, inline: false });
       }
 
       const timestamp = formatKST(new Date());
@@ -2246,6 +2437,7 @@ module.exports = {
         }
       }
 
+
       const user = ban.user;
       const embed = new EmbedBuilder()
         .setTitle(`${ban.guild.name} 멤버 차단 로그`)
@@ -2296,6 +2488,7 @@ module.exports = {
         }
       }
 
+
       const user = ban.user;
       const embed = new EmbedBuilder()
         .setTitle(`${ban.guild.name} 멤버 차단 해제 로그`)
@@ -2318,7 +2511,7 @@ module.exports = {
 
       const timestamp = formatKST(new Date());
 
-      // 1. Timeout Changes (logged to log_update)
+      // 1. Timeout Changes (logged to log_timeout)
       const oldTimeout = before.communicationDisabledUntil;
       const newTimeout = after.communicationDisabledUntil;
 
@@ -2326,28 +2519,41 @@ module.exports = {
       const newTime = newTimeout ? newTimeout.getTime() : null;
 
       if (oldTime !== newTime) {
-        const logChannel = await getLogChannel(client, after.guild.id, 'log_update');
+        let logChannel = await getLogChannel(client, after.guild.id, 'log_timeout');
+        if (!logChannel) {
+          // Fallback to general update log channel if dedicated timeout log is not configured yet
+          logChannel = await getLogChannel(client, after.guild.id, 'log_update');
+        }
         if (logChannel) {
           let executor = "알 수 없음";
           let reason = "사유 없음";
 
-          try {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            const auditLogs = await after.guild.fetchAuditLogs({
-              limit: 5,
-              type: AuditLogEvent.MemberUpdate
-            });
-            const entry = auditLogs.entries.find(e => 
-              e.targetId === after.id && 
-              e.changes.some(c => c.key === 'communication_disabled_until') &&
-              Math.abs(Date.now() - e.createdTimestamp) < 15000
-            );
-            if (entry) {
-              executor = `${entry.executor.tag} (${entry.executor.id})`;
-              reason = entry.reason || "사유 없음";
+          const cacheKey = `${after.guild.id}-${after.id}`;
+          const cached = client.timeoutCache?.get(cacheKey);
+
+          if (cached) {
+            reason = cached.reason || "사유 없음";
+            executor = cached.executor || "알 수 없음";
+            client.timeoutCache.delete(cacheKey);
+          } else {
+            try {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              const auditLogs = await after.guild.fetchAuditLogs({
+                limit: 5,
+                type: AuditLogEvent.MemberUpdate
+              });
+              const entry = auditLogs.entries.find(e => 
+                e.targetId === after.id && 
+                e.changes.some(c => c.key === 'communication_disabled_until') &&
+                Math.abs(Date.now() - e.createdTimestamp) < 15000
+              );
+              if (entry) {
+                executor = `${entry.executor.tag} (${entry.executor.id})`;
+                reason = entry.reason || "사유 없음";
+              }
+            } catch (err) {
+              console.error("Failed to fetch audit logs for timeout update:", err);
             }
-          } catch (err) {
-            console.error("Failed to fetch audit logs for timeout update:", err);
           }
 
           if (newTimeout && (!oldTimeout || newTimeout.getTime() > oldTimeout.getTime())) {
@@ -2412,9 +2618,35 @@ module.exports = {
       if (addedRoles.size > 0 || removedRoles.size > 0) {
         const logChannel = await getLogChannel(client, after.guild.id, 'log_role');
         if (logChannel) {
+          let executor = "알 수 없음";
+          let reason = "사유 없음";
+
+          try {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const auditLogs = await after.guild.fetchAuditLogs({
+              limit: 5,
+              type: AuditLogEvent.MemberRoleUpdate
+            });
+            const entry = auditLogs.entries.find(e => 
+              e.targetId === after.id && 
+              Math.abs(Date.now() - e.createdTimestamp) < 15000
+            );
+            if (entry) {
+              executor = `${entry.executor.tag} (${entry.executor.id})`;
+              reason = entry.reason || "사유 없음";
+            }
+          } catch (err) {
+            console.error("Failed to fetch audit logs for member role update:", err);
+          }
+
           const embed = new EmbedBuilder()
             .setTitle('🔄 멤버 역할 업데이트')
             .setColor(INFO_COLOR || MAIN_COLOR)
+            .addFields(
+              { name: "대상 멤버", value: `${after.toString()} (${after.id})`, inline: true },
+              { name: "처리자", value: executor, inline: true },
+              { name: "사유", value: reason, inline: false }
+            )
             .setFooter({ text: `일시: ${timestamp} • 유저 ID: ${after.id}` });
 
           const changes = [];
@@ -2506,6 +2738,26 @@ module.exports = {
       const logChannel = await getLogChannel(client, newRole.guild.id, 'log_role');
       if (!logChannel) return;
 
+      let executor = "알 수 없음";
+      let reason = "사유 없음";
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const auditLogs = await newRole.guild.fetchAuditLogs({
+          limit: 5,
+          type: AuditLogEvent.RoleUpdate
+        });
+        const entry = auditLogs.entries.find(e => 
+          e.targetId === newRole.id && 
+          Math.abs(Date.now() - e.createdTimestamp) < 15000
+        );
+        if (entry) {
+          executor = `${entry.executor.tag} (${entry.executor.id})`;
+          reason = entry.reason || "사유 없음";
+        }
+      } catch (err) {
+        console.error("Failed to fetch audit logs for role update:", err);
+      }
+
       const embed = new EmbedBuilder()
         .setTitle('🔄 역할 설정 업데이트')
         .setColor(newRole.color || INFO_COLOR || MAIN_COLOR)
@@ -2530,7 +2782,7 @@ module.exports = {
 
       if (changes.length === 0) return;
 
-      embed.setDescription(`**역할 ${newRole.toString()}의 설정이 변경되었습니다.**\n\n${changes.join('\n')}`);
+      embed.setDescription(`**역할 ${newRole.toString()}의 설정이 변경되었습니다.**\n\n• **처리자**: ${executor}\n• **사유**: ${reason}\n\n**[변경 내역]**\n${changes.join('\n')}`);
       await logChannel.send({ embeds: [embed] }).catch(console.error);
     },
 
@@ -2541,6 +2793,7 @@ module.exports = {
       if (!logChannel) return;
 
       let executor = "알 수 없음";
+      let reason = "사유 없음";
       try {
         await new Promise(resolve => setTimeout(resolve, 1000));
         const auditLogs = await role.guild.fetchAuditLogs({
@@ -2550,6 +2803,7 @@ module.exports = {
         const entry = auditLogs.entries.first();
         if (entry && entry.targetId === role.id && Math.abs(Date.now() - entry.createdTimestamp) < 15000) {
           executor = `${entry.executor.tag} (${entry.executor.id})`;
+          reason = entry.reason || "사유 없음";
         }
       } catch (err) {
         console.error("Failed to fetch audit logs for role create:", err);
@@ -2561,7 +2815,8 @@ module.exports = {
           `새로운 역할 **${role.toString()}**이(가) 생성되었습니다.\n\n` +
           `• **역할 이름**: \`${role.name}\`\n` +
           `• **역할 ID**: \`${role.id}\`\n` +
-          `• **생성자**: ${executor}`
+          `• **생성자**: ${executor}\n` +
+          `• **사유**: ${reason}`
         )
         .setColor(0x10B981) // Green
         .setTimestamp();
@@ -2576,6 +2831,7 @@ module.exports = {
       if (!logChannel) return;
 
       let executor = "알 수 없음";
+      let reason = "사유 없음";
       try {
         await new Promise(resolve => setTimeout(resolve, 1000));
         const auditLogs = await role.guild.fetchAuditLogs({
@@ -2585,6 +2841,7 @@ module.exports = {
         const entry = auditLogs.entries.first();
         if (entry && entry.targetId === role.id && Math.abs(Date.now() - entry.createdTimestamp) < 15000) {
           executor = `${entry.executor.tag} (${entry.executor.id})`;
+          reason = entry.reason || "사유 없음";
         }
       } catch (err) {
         console.error("Failed to fetch audit logs for role delete:", err);
@@ -2596,7 +2853,8 @@ module.exports = {
           `역할 **${role.name}**이(가) 삭제되었습니다.\n\n` +
           `• **역할 이름**: \`${role.name}\`\n` +
           `• **역할 ID**: \`${role.id}\`\n` +
-          `• **삭제자**: ${executor}`
+          `• **삭제자**: ${executor}\n` +
+          `• **사유**: ${reason}`
         )
         .setColor(0xEF4444) // Red
         .setTimestamp();
@@ -2625,11 +2883,30 @@ module.exports = {
       const logChannel = await getLogChannel(client, message.guild.id, 'log_reaction');
       if (!logChannel) return;
 
+      let contentPreview = message.content || "";
+      let authorMention = message.author ? `${message.author.toString()} (${message.author.tag})` : '알 수 없음';
+      let authorId = message.author ? message.author.id : '알 수 없음';
+
+      // DB 소급 조회로 유실된 메시지 정보 복구
+      if (!contentPreview || authorMention === '알 수 없음') {
+        const dbMsg = await getMessageFromDb(message.id);
+        if (dbMsg) {
+          if (!contentPreview) contentPreview = dbMsg.content || "";
+          if (authorMention === '알 수 없음' && dbMsg.author_id) {
+            authorId = dbMsg.author_id;
+            const fetchedUser = await client.users.fetch(dbMsg.author_id).catch(() => null);
+            if (fetchedUser) {
+              authorMention = `${fetchedUser.toString()} (${fetchedUser.tag})`;
+            } else {
+              authorMention = `<@${dbMsg.author_id}> (ID: ${dbMsg.author_id})`;
+            }
+          }
+        }
+      }
+
       const emoji = reaction.emoji;
       const emojiDisplay = emoji.id ? `<:${emoji.name}:${emoji.id}>` : emoji.name;
 
-      // Limit message content preview length
-      let contentPreview = message.content || "";
       if (contentPreview.length > 500) {
         contentPreview = contentPreview.substring(0, 500) + "...";
       }
@@ -2646,7 +2923,7 @@ module.exports = {
         .setDescription(
           `**${user.toString()} (${user.tag})** 님이 메시지에 반응을 추가했습니다.\n\n` +
           `• **추가된 반응**: ${emojiDisplay} (이름: \`${emoji.name}\`${emoji.id ? `, ID: \`${emoji.id}\`` : ''})\n` +
-          `• **대상 메시지 작성자**: ${message.author ? `${message.author.toString()} (${message.author.tag})` : '알 수 없음'}\n` +
+          `• **대상 메시지 작성자**: ${authorMention}\n` +
           `• **대상 채널**: ${message.channel.toString()}\n` +
           `• **메시지 내용 바로가기**: [클릭하여 이동](${message.url})\n\n` +
           `**메시지 내용 미리보기:**\n\`\`\`\n${contentPreview}\n\`\`\``
@@ -2678,11 +2955,30 @@ module.exports = {
       const logChannel = await getLogChannel(client, message.guild.id, 'log_reaction');
       if (!logChannel) return;
 
+      let contentPreview = message.content || "";
+      let authorMention = message.author ? `${message.author.toString()} (${message.author.tag})` : '알 수 없음';
+      let authorId = message.author ? message.author.id : '알 수 없음';
+
+      // DB 소급 조회로 유실된 메시지 정보 복구
+      if (!contentPreview || authorMention === '알 수 없음') {
+        const dbMsg = await getMessageFromDb(message.id);
+        if (dbMsg) {
+          if (!contentPreview) contentPreview = dbMsg.content || "";
+          if (authorMention === '알 수 없음' && dbMsg.author_id) {
+            authorId = dbMsg.author_id;
+            const fetchedUser = await client.users.fetch(dbMsg.author_id).catch(() => null);
+            if (fetchedUser) {
+              authorMention = `${fetchedUser.toString()} (${fetchedUser.tag})`;
+            } else {
+              authorMention = `<@${dbMsg.author_id}> (ID: ${dbMsg.author_id})`;
+            }
+          }
+        }
+      }
+
       const emoji = reaction.emoji;
       const emojiDisplay = emoji.id ? `<:${emoji.name}:${emoji.id}>` : emoji.name;
 
-      // Limit message content preview length
-      let contentPreview = message.content || "";
       if (contentPreview.length > 500) {
         contentPreview = contentPreview.substring(0, 500) + "...";
       }
@@ -2699,7 +2995,7 @@ module.exports = {
         .setDescription(
           `**${user.toString()} (${user.tag})** 님이 메시지에서 반응을 제거했습니다.\n\n` +
           `• **제거된 반응**: ${emojiDisplay} (이름: \`${emoji.name}\`${emoji.id ? `, ID: \`${emoji.id}\`` : ''})\n` +
-          `• **대상 메시지 작성자**: ${message.author ? `${message.author.toString()} (${message.author.tag})` : '알 수 없음'}\n` +
+          `• **대상 메시지 작성자**: ${authorMention}\n` +
           `• **대상 채널**: ${message.channel.toString()}\n` +
           `• **메시지 내용 바로가기**: [클릭하여 이동](${message.url})\n\n` +
           `**메시지 내용 미리보기:**\n\`\`\`\n${contentPreview}\n\`\`\``
@@ -2714,5 +3010,72 @@ module.exports = {
   logSettingsCache,
   saveLogSettings,
   activePurges,
-  logPurge: logPurgeInternal
+  logPurge: logPurgeInternal,
+  logWarning: logWarningEvent
 };
+
+// 경고/제재 이벤트 로깅용 공용 헬퍼 함수
+async function logWarningEvent(client, guildId, eventData) {
+  try {
+    const logChannel = await getLogChannel(client, guildId, 'log_sanction');
+    if (!logChannel) return;
+
+    const { action, targetUser, moderator, count, warnId, reason, amount, deletedWarnings, remainingCount } = eventData;
+    
+    const embed = new EmbedBuilder()
+      .setColor(MAIN_COLOR)
+      .setTimestamp();
+
+    if (action === 'add') {
+      embed.setTitle('⚖️ [제재] 유저 경고 부여')
+        .setDescription(`${targetUser} 님에게 새로운 경고가 부여되었습니다.`)
+        .addFields(
+          { name: '경고 ID', value: `\`#${warnId}\``, inline: true },
+          { name: '대상 유저', value: `${targetUser.tag || targetUser.username} (${targetUser.id})`, inline: true },
+          { name: '누적 경고 횟수', value: `**${count}회**`, inline: true },
+          { name: '처리 관리자', value: `${moderator.tag || moderator.username} (${moderator.id})`, inline: true },
+          { name: '경고 사유', value: reason || '사유 미지정', inline: false }
+        );
+    } else if (action === 'delete_id') {
+      embed.setTitle('⚖️ [제재] 특정 경고 ID 삭제')
+        .setDescription(`${targetUser} 님의 경고 기록 중 특정 ID 경고가 삭제되었습니다.`)
+        .addFields(
+          { name: '대상 유저', value: `${targetUser.tag || targetUser.username} (${targetUser.id})`, inline: true },
+          { name: '삭제된 경고 ID', value: `\`#${warnId}\``, inline: true },
+          { name: '남은 누적 경고', value: `**${remainingCount}회**`, inline: true },
+          { name: '삭제 처리자', value: `${moderator.tag || moderator.username} (${moderator.id})`, inline: true },
+          { name: '삭제 사유', value: reason || '사유 미지정', inline: false }
+        );
+      if (eventData.originalReason) {
+        embed.addFields({ name: '삭제된 경고의 원래 사유', value: `\`${eventData.originalReason}\` (${eventData.originalTimestamp ? new Date(eventData.originalTimestamp).toLocaleDateString() : '알 수 없음'})`, inline: false });
+      }
+    } else if (action === 'subtract') {
+      embed.setTitle('⚖️ [제재] 누적 경고 차감')
+        .setDescription(`${targetUser} 님의 누적 경고 중 최근 기록이 차감되었습니다.`)
+        .addFields(
+          { name: '대상 유저', value: `${targetUser.tag || targetUser.username} (${targetUser.id})`, inline: true },
+          { name: '차감된 횟수', value: `**${amount}회**`, inline: true },
+          { name: '남은 누적 경고', value: `**${remainingCount}회**`, inline: true },
+          { name: '차감 처리자', value: `${moderator.tag || moderator.username} (${moderator.id})`, inline: true },
+          { name: '차감 사유', value: reason || '사유 미지정', inline: false }
+        );
+      if (deletedWarnings && deletedWarnings.length > 0) {
+        const details = deletedWarnings.map(r => 
+          `• \`#${r.guild_warn_id || r.id}\` 경고 - **원래 사유**: \`${r.reason || '사유 미지정'}\` (${new Date(r.timestamp).toLocaleDateString()})`
+        ).join('\n');
+        embed.addFields({ name: '차감된 경고 정보', value: details });
+      }
+    } else if (action === 'reset') {
+      embed.setTitle('⚖️ [제재] 유저 경고 전체 초기화')
+        .setDescription(`${targetUser} 님의 모든 누적 경고가 깨끗하게 초기화되었습니다.`)
+        .addFields(
+          { name: '대상 유저', value: `${targetUser.tag || targetUser.username} (${targetUser.id})`, inline: true },
+          { name: '처리 관리자', value: `${moderator.tag || moderator.username} (${moderator.id})`, inline: true }
+        );
+    }
+
+    await logChannel.send({ embeds: [embed] }).catch(console.error);
+  } catch (e) {
+    console.error("[logWarningEvent] Error sending warning log:", e);
+  }
+}

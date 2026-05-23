@@ -101,20 +101,20 @@ module.exports = {
           [guild.id, targetUser.id, user.id, reason, new Date().toISOString(), guild.id],
           function(err) {
             if (err) {
-              return interaction.reply({ content: '❌ 경고 저장 중 오류가 발생했습니다.', ephemeral: true });
+              return interaction.reply({ content: '❌ 경고 저장 중에 오류가 발생해버렸어요... 다시 한 번 시도해볼까요?', ephemeral: true });
             }
 
             const lastInsertedId = this.lastID;
 
             db.get("SELECT guild_warn_id FROM warnings WHERE id = ?", [lastInsertedId], (err, warnRow) => {
-              const guildWarnId = warnRow ? warnRow.guild_warn_id : 'N/A';
+              const guildWarnId = (warnRow && warnRow.guild_warn_id) ? warnRow.guild_warn_id : lastInsertedId;
 
               db.get("SELECT COUNT(*) as count FROM warnings WHERE guild_id = ? AND user_id = ?", [guild.id, targetUser.id], async (err, row) => {
                 const count = row ? row.count : 1;
                 
                 const embed = new EmbedBuilder()
                   .setTitle('⚠️ 유저 경고 부여')
-                  .setDescription(`${targetUser} 님에게 경고가 부여되었습니다.`)
+                  .setDescription(`${targetUser} 님에게 새로운 경고를 드렸어요!`)
                   .addFields(
                     { name: '경고 ID', value: `\`#${guildWarnId}\``, inline: true },
                     { name: '대상 유저', value: `${targetUser.tag} (${targetUser.id})`, inline: true },
@@ -126,6 +126,21 @@ module.exports = {
                   .setTimestamp();
 
                 await interaction.reply({ embeds: [embed] });
+
+                // Send Warning Log to log_sanction channel
+                try {
+                  const loggingCog = require('./logging_cog');
+                  loggingCog.logWarning(interaction.client, guild.id, {
+                    action: 'add',
+                    targetUser,
+                    moderator: user,
+                    count,
+                    warnId: guildWarnId,
+                    reason
+                  });
+                } catch (logErr) {
+                  console.error("Failed to send warn log:", logErr);
+                }
 
               // Check and apply custom warning sanctions
               db.get(
@@ -160,7 +175,7 @@ module.exports = {
 
                           const autoEmbed = new EmbedBuilder()
                             .setTitle('🛡️ 누적 경고 자동 제재 (타임아웃)')
-                            .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달하여 **${durationStr} 타임아웃** 제재를 받았습니다.`)
+                            .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **${durationStr} 타임아웃** 제재를 받았어요!`)
                             .setColor(ERROR_COLOR)
                             .setTimestamp();
                           await interaction.followUp({ embeds: [autoEmbed] });
@@ -174,7 +189,7 @@ module.exports = {
                           await member.kick(`누적 경고 ${count}회 도달 자동 제재`);
                           const autoEmbed = new EmbedBuilder()
                             .setTitle('🛡️ 누적 경고 자동 제재 (추방)')
-                            .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달하여 **서버에서 추방** 처리되었습니다.`)
+                            .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **서버에서 추방**해드렸어요!`)
                             .setColor(ERROR_COLOR)
                             .setTimestamp();
                           await interaction.followUp({ embeds: [autoEmbed] });
@@ -194,7 +209,7 @@ module.exports = {
                           await guild.members.ban(targetUser.id, { reason: autoReason });
                           const autoEmbed = new EmbedBuilder()
                             .setTitle('🛡️ 누적 경고 자동 제재 (차단)')
-                            .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달하여 **서버에서 차단(밴)** 처리되었습니다.`)
+                            .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **서버에서 차단(밴)**해드렸어요!`)
                             .setColor(ERROR_COLOR)
                             .setTimestamp();
                           await interaction.followUp({ embeds: [autoEmbed] });
@@ -232,15 +247,15 @@ module.exports = {
           return interaction.reply({ embeds: [PERMISSION_ERROR_EMBED()], ephemeral: true });
         }
 
-        db.all("SELECT guild_warn_id, reason, moderator_id, timestamp FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY guild_warn_id DESC", [guild.id, targetUser.id], (err, rows) => {
+        db.all("SELECT COALESCE(guild_warn_id, id) as guild_warn_id, reason, moderator_id, timestamp FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY COALESCE(guild_warn_id, id) DESC", [guild.id, targetUser.id], (err, rows) => {
           if (err) {
-            return interaction.reply({ content: '❌ 경고 조회 중 데이터베이스 오류가 발생했습니다.', ephemeral: true });
+            return interaction.reply({ content: '❌ 경고를 조회하는 중에 데이터베이스 오류가 발생해버렸어요!', ephemeral: true });
           }
 
           const count = rows ? rows.length : 0;
           const embed = new EmbedBuilder()
             .setTitle(`🔍 ${targetUser.username} 님의 누적 경고`)
-            .setDescription(`${targetUser} 님의 누적 경고 횟수는 현재 **${count}회**입니다.`)
+            .setDescription(`${targetUser} 님의 누적 경고 횟수는 현재 **${count}회**에요!`)
             .setColor(MAIN_COLOR)
             .setTimestamp();
 
@@ -250,7 +265,7 @@ module.exports = {
             ).join('\n');
             embed.addFields({ name: '최근 경고 기록 (최대 10개)', value: list });
           } else {
-            embed.addFields({ name: '경고 기록', value: '깨끗합니다! 등록된 경고가 없습니다. ✨' });
+            embed.addFields({ name: '경고 기록', value: '정말 깨끗해요! 등록된 경고가 하나도 없어요. ✨' });
           }
 
           return interaction.reply({ embeds: [embed] });
@@ -273,14 +288,26 @@ module.exports = {
 
         db.run("DELETE FROM warnings WHERE guild_id = ? AND user_id = ?", [guild.id, targetUser.id], function(err) {
           if (err) {
-            return interaction.reply({ content: '❌ 경고 초기화 중 데이터베이스 오류가 발생했습니다.', ephemeral: true });
+            return interaction.reply({ content: '❌ 경고를 초기화하는 중에 데이터베이스 오류가 발생해버렸어요!', ephemeral: true });
           }
 
           const embed = new EmbedBuilder()
             .setTitle('✨ 경고 초기화 완료')
-            .setDescription(`${targetUser} 님의 모든 누적 경고가 깨끗이 초기화되었습니다.`)
+            .setDescription(`${targetUser} 님의 모든 누적 경고를 깨끗하게 초기화해드렸어요!`)
             .setColor(SUCCESS_COLOR)
             .setTimestamp();
+
+          // Send reset log to log_sanction channel
+          try {
+            const loggingCog = require('./logging_cog');
+            loggingCog.logWarning(interaction.client, guild.id, {
+              action: 'reset',
+              targetUser,
+              moderator: interaction.user
+            });
+          } catch (logErr) {
+            console.error("Failed to send warn log:", logErr);
+          }
 
           return interaction.reply({ embeds: [embed] });
         });
@@ -303,12 +330,12 @@ module.exports = {
 
         db.get("SELECT user_id, reason, timestamp FROM warnings WHERE guild_id = ? AND guild_warn_id = ?", [guildId, guildWarnId], (err, row) => {
           if (err || !row) {
-            return interaction.reply({ content: `❌ 이 서버에서 경고 ID **#${guildWarnId}**에 해당하는 기록을 찾을 수 없습니다.`, ephemeral: true });
+            return interaction.reply({ content: `❌ 이 서버에서 경고 ID **#${guildWarnId}**에 해당하는 기록을 찾을 수 없어요... 다시 한 번 확인해볼까요?`, ephemeral: true });
           }
 
           db.run("DELETE FROM warnings WHERE guild_id = ? AND guild_warn_id = ?", [guildId, guildWarnId], async function(err) {
             if (err) {
-              return interaction.reply({ content: '❌ 경고 삭제 중 오류가 발생했습니다.', ephemeral: true });
+              return interaction.reply({ content: '❌ 경고를 삭제하는 중에 오류가 발생해버렸어요!', ephemeral: true });
             }
 
             const targetUser = await interaction.client.users.fetch(row.user_id).catch(() => null);
@@ -316,7 +343,7 @@ module.exports = {
 
             const embed = new EmbedBuilder()
               .setTitle('✨ 특정 경고 삭제 완료')
-              .setDescription(`경고 ID **#${guildWarnId}**번 기록이 성공적으로 삭제(차감)되었습니다.`)
+              .setDescription(`경고 ID **#${guildWarnId}**번 기록을 성공적으로 삭제(차감)해드렸어요!`)
               .addFields(
                 { name: '대상 유저', value: userTag, inline: true },
                 { name: '기존 경고 사유', value: row.reason, inline: true },
@@ -324,6 +351,26 @@ module.exports = {
               )
               .setColor(SUCCESS_COLOR)
               .setTimestamp();
+
+            // Send ID delete log to log_sanction channel
+            try {
+              const loggingCog = require('./logging_cog');
+              db.get("SELECT COUNT(*) as count FROM warnings WHERE guild_id = ? AND user_id = ?", [guildId, row.user_id], (err, countRow) => {
+                const remainingCount = countRow ? countRow.count : 0;
+                loggingCog.logWarning(interaction.client, guildId, {
+                  action: 'delete_id',
+                  targetUser: targetUser || { id: row.user_id, tag: row.user_id, username: '외부 유저' },
+                  moderator: interaction.user,
+                  warnId: guildWarnId,
+                  reason: '슬래시 명령어로 특정 경고 ID 삭제',
+                  originalReason: row.reason || '사유 미지정',
+                  originalTimestamp: row.timestamp,
+                  remainingCount
+                });
+              });
+            } catch (logErr) {
+              console.error("Failed to send warn log:", logErr);
+            }
 
             return interaction.reply({ embeds: [embed] });
           });
@@ -347,7 +394,7 @@ module.exports = {
 
         db.get("SELECT user_id, moderator_id, reason, timestamp FROM warnings WHERE guild_id = ? AND guild_warn_id = ?", [guildId, guildWarnId], async (err, row) => {
           if (err || !row) {
-            return interaction.reply({ content: `❌ 이 서버에서 경고 ID **#${guildWarnId}**에 해당하는 기록을 찾을 수 없습니다.`, ephemeral: true });
+            return interaction.reply({ content: `❌ 이 서버에서 경고 ID **#${guildWarnId}**에 해당하는 기록을 찾을 수 없어요... 다시 한 번 확인해볼까요?`, ephemeral: true });
           }
 
           const targetUser = await interaction.client.users.fetch(row.user_id).catch(() => null);
@@ -383,23 +430,23 @@ module.exports = {
         const guildId = interaction.guildId.toString();
         const targetUser = interaction.options.getUser('대상');
 
-        let query = "SELECT guild_warn_id, user_id, moderator_id, reason, timestamp FROM warnings WHERE guild_id = ? ORDER BY guild_warn_id DESC";
+        let query = "SELECT COALESCE(guild_warn_id, id) as guild_warn_id, user_id, moderator_id, reason, timestamp FROM warnings WHERE guild_id = ? ORDER BY COALESCE(guild_warn_id, id) DESC";
         let params = [guildId];
 
         if (targetUser) {
-          query = "SELECT guild_warn_id, user_id, moderator_id, reason, timestamp FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY guild_warn_id DESC";
+          query = "SELECT COALESCE(guild_warn_id, id) as guild_warn_id, user_id, moderator_id, reason, timestamp FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY COALESCE(guild_warn_id, id) DESC";
           params = [guildId, targetUser.id];
         }
 
         db.all(query, params, async (err, rows) => {
           if (err) {
-            return interaction.reply({ content: '❌ 경고 목록 조회 중 오류가 발생했습니다.', ephemeral: true });
+            return interaction.reply({ content: '❌ 경고 목록을 조회하는 도중에 오류가 발생해버렸어요!', ephemeral: true });
           }
 
           if (!rows || rows.length === 0) {
             const emptyEmbed = new EmbedBuilder()
               .setTitle(targetUser ? `📋 ${targetUser.username} 님의 경고 목록` : '📋 서버 전체 경고 목록')
-              .setDescription('등록된 경고 기록이 없습니다. ✨')
+              .setDescription('아직 등록된 경고 기록이 하나도 없어요. ✨')
               .setColor(MAIN_COLOR)
               .setTimestamp();
             return interaction.reply({ embeds: [emptyEmbed] });
@@ -488,18 +535,18 @@ module.exports = {
         const member = guild.members.cache.get(targetUser.id);
 
         if (!member) {
-          return interaction.reply({ content: '❌ 서버에서 해당 유저를 찾을 수 없습니다.', ephemeral: true });
+          return interaction.reply({ content: '❌ 서버에서 해당 유저분을 찾을 수 없어요... 올바른 유저를 입력해볼까요?', ephemeral: true });
         }
 
         if (!member.kickable) {
-          return interaction.reply({ content: '❌ 봇의 권한이 부족하여 해당 유저를 추방할 수 없습니다.', ephemeral: true });
+          return interaction.reply({ content: '❌ 봇의 권한이 부족해서 해당 유저분을 추방할 수 없어요!', ephemeral: true });
         }
 
         await member.kick(reason);
 
         const embed = new EmbedBuilder()
           .setTitle('👢 유저 추방 완료')
-          .setDescription(`${targetUser.tag} 님이 서버에서 성공적으로 추방되었습니다.`)
+          .setDescription(`${targetUser.tag} 님을 서버에서 성공적으로 추방해드렸어요!`)
           .addFields(
             { name: '대상 유저', value: `${targetUser} (${targetUser.id})`, inline: true },
             { name: '처리 관리자', value: `${user}`, inline: true },
@@ -526,48 +573,120 @@ module.exports = {
           return interaction.reply({ embeds: [PERMISSION_ERROR_EMBED()], ephemeral: true });
         }
         const targetInput = interaction.options.getString('대상');
-        const idMatch = targetInput.match(/\d{17,19}/);
-        if (!idMatch) {
-          return interaction.reply({ content: '❌ 올바른 유저 ID 또는 멘션을 입력해주세요.', ephemeral: true });
-        }
-        const targetId = idMatch[0];
         const reason = interaction.options.getString('사유') || '사유 미지정';
         const guild = interaction.guild;
         const user = interaction.user;
 
-        // Try to fetch the user object to display their details nicely
-        let targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
-        const userDisplay = targetUser ? `${targetUser}` : `<@${targetId}>`;
-        const userTag = targetUser ? `${targetUser.tag} (${targetId})` : `외부/미캐싱 유저 (${targetId})`;
+        // Check for multiple targets separated by , / |
+        const separatorRegex = /[,/|]/;
+        const parts = targetInput.split(separatorRegex).map(p => p.trim()).filter(Boolean);
 
-        // Cache the ban reason & executor locally to avoid audit log latency and race conditions
-        interaction.client.banCache = interaction.client.banCache || new Map();
-        interaction.client.banCache.set(`${guild.id}-${targetId}`, {
-          reason,
-          executor: `${user.toString()} (${user.tag})`
-        });
+        if (parts.length >= 2) {
+          // Multi-ban logic
+          const successUsers = [];
+          const failedUsers = [];
 
-        try {
-          await guild.members.ban(targetId, { reason });
-        } catch (e) {
-          if (interaction.client.banCache) {
-            interaction.client.banCache.delete(`${guild.id}-${targetId}`);
+          interaction.client.banCache = interaction.client.banCache || new Map();
+
+          // Defer reply as bulk banning can take a bit longer than 3 seconds
+          await interaction.deferReply();
+
+          for (const part of parts) {
+            const idMatch = part.match(/\d{17,19}/);
+            if (!idMatch) {
+              failedUsers.push(`\`${part}\` (올바르지 않은 ID/멘션 포맷이에요)`);
+              continue;
+            }
+            const targetId = idMatch[0];
+
+            let targetMember = await guild.members.fetch(targetId).catch(() => null);
+            if (targetMember && !targetMember.bannable) {
+              failedUsers.push(`<@${targetId}> (봇보다 권한이 높거나 추방 불가능한 유저에요)`);
+              continue;
+            }
+
+            let targetUser = targetMember ? targetMember.user : await interaction.client.users.fetch(targetId).catch(() => null);
+            const userDisplay = targetUser ? `${targetUser.toString()}` : `<@${targetId}>`;
+
+            // Cache the ban metadata
+            interaction.client.banCache.set(`${guild.id}-${targetId}`, {
+              reason,
+              executor: `${user.toString()} (${user.tag})`
+            });
+
+            try {
+              await guild.members.ban(targetId, { reason });
+              successUsers.push(userDisplay);
+            } catch (e) {
+              if (interaction.client.banCache) {
+                interaction.client.banCache.delete(`${guild.id}-${targetId}`);
+              }
+              console.error(e);
+              failedUsers.push(`${userDisplay} (API 오류가 발생했어요)`);
+            }
           }
-          return interaction.reply({ content: '❌ 봇의 권한이 부족하거나 유효하지 않은 유저 ID여서 차단할 수 없습니다.', ephemeral: true });
+
+          const embed = new EmbedBuilder()
+            .setTitle("🛡️ 멤버 다인 차단 완료")
+            .setColor(ERROR_COLOR)
+            .setTimestamp()
+            .addFields(
+              { name: "집행 관리자", value: user.toString(), inline: true },
+              { name: "차단 사유", value: reason, inline: true }
+            );
+
+          let desc = "";
+          if (successUsers.length > 0) {
+            desc += `✅ **차단 성공 (${successUsers.length}명)**\n${successUsers.join(', ')}\n\n`;
+          }
+          if (failedUsers.length > 0) {
+            desc += `❌ **차단 실패 (${failedUsers.length}명)**\n${failedUsers.join('\n')}\n`;
+          }
+
+          embed.setDescription(desc || "조치된 대상이 아무도 없어요.");
+          return interaction.editReply({ embeds: [embed] });
+        } else {
+          // Single ban logic
+          const idMatch = targetInput.match(/\d{17,19}/);
+          if (!idMatch) {
+            return interaction.reply({ content: '❌ 올바른 유저 ID나 멘션을 입력해볼까요?', ephemeral: true });
+          }
+          const targetId = idMatch[0];
+
+          // Try to fetch the user object to display their details nicely
+          let targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
+          const userDisplay = targetUser ? `${targetUser}` : `<@${targetId}>`;
+          const userTag = targetUser ? `${targetUser.tag} (${targetId})` : `외부/미캐싱 유저 (${targetId})`;
+
+          // Cache the ban reason & executor locally to avoid audit log latency and race conditions
+          interaction.client.banCache = interaction.client.banCache || new Map();
+          interaction.client.banCache.set(`${guild.id}-${targetId}`, {
+            reason,
+            executor: `${user.toString()} (${user.tag})`
+          });
+
+          try {
+            await guild.members.ban(targetId, { reason });
+          } catch (e) {
+            if (interaction.client.banCache) {
+              interaction.client.banCache.delete(`${guild.id}-${targetId}`);
+            }
+            return interaction.reply({ content: '❌ 봇의 권한이 부족하거나 유효하지 않은 유저 ID여서 차단할 수 없어요!', ephemeral: true });
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle('🚫 유저 차단 완료')
+            .setDescription(`${userDisplay} 님을 서버에서 영구 차단해드렸어요!`)
+            .addFields(
+              { name: '대상 유저', value: userTag, inline: true },
+              { name: '처리 관리자', value: `${user}`, inline: true },
+              { name: '사유', value: reason }
+            )
+            .setColor(ERROR_COLOR)
+            .setTimestamp();
+
+          return interaction.reply({ embeds: [embed] });
         }
-
-        const embed = new EmbedBuilder()
-          .setTitle('🚫 유저 차단 완료')
-          .setDescription(`${userDisplay} 님이 서버에서 영구 차단되었습니다.`)
-          .addFields(
-            { name: '대상 유저', value: userTag, inline: true },
-            { name: '처리 관리자', value: `${user}`, inline: true },
-            { name: '사유', value: reason }
-          )
-          .setColor(ERROR_COLOR)
-          .setTimestamp();
-
-        return interaction.reply({ embeds: [embed] });
       }
     },
     {
@@ -585,48 +704,120 @@ module.exports = {
           return interaction.reply({ embeds: [PERMISSION_ERROR_EMBED()], ephemeral: true });
         }
         const targetInput = interaction.options.getString('대상');
-        const idMatch = targetInput.match(/\d{17,19}/);
-        if (!idMatch) {
-          return interaction.reply({ content: '❌ 올바른 유저 ID 또는 멘션을 입력해주세요.', ephemeral: true });
-        }
-        const targetId = idMatch[0];
         const reason = interaction.options.getString('사유') || '사유 미지정';
         const guild = interaction.guild;
         const user = interaction.user;
 
-        // Try to fetch the user object to display their details nicely
-        let targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
-        const userDisplay = targetUser ? `${targetUser}` : `<@${targetId}>`;
-        const userTag = targetUser ? `${targetUser.tag} (${targetId})` : `외부/미캐싱 유저 (${targetId})`;
+        // Check for multiple targets separated by , / |
+        const separatorRegex = /[,/|]/;
+        const parts = targetInput.split(separatorRegex).map(p => p.trim()).filter(Boolean);
 
-        // Cache the unban reason & executor locally to avoid audit log latency and race conditions
-        interaction.client.unbanCache = interaction.client.unbanCache || new Map();
-        interaction.client.unbanCache.set(`${guild.id}-${targetId}`, {
-          reason,
-          executor: `${user.toString()} (${user.tag})`
-        });
+        if (parts.length >= 2) {
+          // Multi-unban logic
+          const successUsers = [];
+          const failedUsers = [];
 
-        try {
-          await guild.bans.remove(targetId, reason);
-        } catch (e) {
-          if (interaction.client.unbanCache) {
-            interaction.client.unbanCache.delete(`${guild.id}-${targetId}`);
+          interaction.client.unbanCache = interaction.client.unbanCache || new Map();
+
+          // Defer reply as bulk unbanning can take a bit longer than 3 seconds
+          await interaction.deferReply();
+
+          const banList = await guild.bans.fetch().catch(() => null);
+
+          for (const part of parts) {
+            const idMatch = part.match(/\d{17,19}/);
+            if (!idMatch) {
+              failedUsers.push(`\`${part}\` (올바르지 않은 ID/멘션 포맷이에요)`);
+              continue;
+            }
+            const targetId = idMatch[0];
+
+            const isBanned = banList ? banList.has(targetId) : true;
+            if (!isBanned) {
+              failedUsers.push(`<@${targetId}> (차단된 상태가 아니에요)`);
+              continue;
+            }
+
+            let targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
+            const userDisplay = targetUser ? `${targetUser.toString()}` : `<@${targetId}>`;
+
+            // Cache the unban metadata
+            interaction.client.unbanCache.set(`${guild.id}-${targetId}`, {
+              reason,
+              executor: `${user.toString()} (${user.tag})`
+            });
+
+            try {
+              await guild.bans.remove(targetId, reason);
+              successUsers.push(userDisplay);
+            } catch (e) {
+              if (interaction.client.unbanCache) {
+                interaction.client.unbanCache.delete(`${guild.id}-${targetId}`);
+              }
+              console.error(e);
+              failedUsers.push(`${userDisplay} (API 오류가 발생했어요)`);
+            }
           }
-          return interaction.reply({ content: '❌ 차단 목록에서 해당 ID의 유저를 찾을 수 없거나 봇의 권한이 부족합니다.', ephemeral: true });
+
+          const embed = new EmbedBuilder()
+            .setTitle("🛡️ 멤버 다인 차단 해제 완료")
+            .setColor(SUCCESS_COLOR)
+            .setTimestamp()
+            .addFields(
+              { name: "집행 관리자", value: user.toString(), inline: true },
+              { name: "해제 사유", value: reason, inline: true }
+            );
+
+          let desc = "";
+          if (successUsers.length > 0) {
+            desc += `✅ **차단 해제 성공 (${successUsers.length}명)**\n${successUsers.join(', ')}\n\n`;
+          }
+          if (failedUsers.length > 0) {
+            desc += `❌ **차단 해제 실패 (${failedUsers.length}명)**\n${failedUsers.join('\n')}\n`;
+          }
+
+          embed.setDescription(desc || "조치된 대상이 아무도 없어요.");
+          return interaction.editReply({ embeds: [embed] });
+        } else {
+          // Single unban logic
+          const idMatch = targetInput.match(/\d{17,19}/);
+          if (!idMatch) {
+            return interaction.reply({ content: '❌ 올바른 유저 ID나 멘션을 입력해볼까요?', ephemeral: true });
+          }
+          const targetId = idMatch[0];
+
+          let targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
+          const userDisplay = targetUser ? `${targetUser}` : `<@${targetId}>`;
+          const userTag = targetUser ? `${targetUser.tag} (${targetId})` : `외부/미캐싱 유저 (${targetId})`;
+
+          interaction.client.unbanCache = interaction.client.unbanCache || new Map();
+          interaction.client.unbanCache.set(`${guild.id}-${targetId}`, {
+            reason,
+            executor: `${user.toString()} (${user.tag})`
+          });
+
+          try {
+            await guild.bans.remove(targetId, reason);
+          } catch (e) {
+            if (interaction.client.unbanCache) {
+              interaction.client.unbanCache.delete(`${guild.id}-${targetId}`);
+            }
+            return interaction.reply({ content: '❌ 차단 목록에서 해당 ID의 유저분을 찾을 수 없거나 봇의 권한이 부족해요!', ephemeral: true });
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle('🔓 유저 차단 해제 완료')
+            .setDescription(`${userDisplay} 님의 차단을 성공적으로 해제해드렸어요!`)
+            .addFields(
+              { name: '대상 유저', value: userTag, inline: true },
+              { name: '처리 관리자', value: `${user}`, inline: true },
+              { name: '사유', value: reason }
+            )
+            .setColor(SUCCESS_COLOR)
+            .setTimestamp();
+
+          return interaction.reply({ embeds: [embed] });
         }
-
-        const embed = new EmbedBuilder()
-          .setTitle('🔓 유저 차단 해제 완료')
-          .setDescription(`${userDisplay} 님의 차단이 성공적으로 해제되었습니다.`)
-          .addFields(
-            { name: '대상 유저', value: userTag, inline: true },
-            { name: '처리 관리자', value: `${user}`, inline: true },
-            { name: '사유', value: reason }
-          )
-          .setColor(SUCCESS_COLOR)
-          .setTimestamp();
-
-        return interaction.reply({ embeds: [embed] });
       }
     },
     {
@@ -654,18 +845,18 @@ module.exports = {
         const member = guild.members.cache.get(targetUser.id);
 
         if (!member) {
-          return interaction.reply({ content: '❌ 서버에서 해당 유저를 찾을 수 없습니다.', ephemeral: true });
+          return interaction.reply({ content: '❌ 서버에서 해당 유저분을 찾을 수 없어요... 올바른 유저를 지정해볼까요?', ephemeral: true });
         }
 
         if (!member.moderatable) {
-          return interaction.reply({ content: '❌ 봇의 권한이 부족하여 해당 유저를 타임아웃할 수 없습니다.', ephemeral: true });
+          return interaction.reply({ content: '❌ 봇의 권한이 부족해서 해당 유저분을 타임아웃할 수 없어요!', ephemeral: true });
         }
 
         await member.timeout(durationMinutes * 60 * 1000, reason);
 
         const embed = new EmbedBuilder()
           .setTitle('⏳ 유저 타임아웃 완료')
-          .setDescription(`${targetUser.tag} 님이 **${durationMinutes}분** 동안 타임아웃 제재를 받았습니다.`)
+          .setDescription(`${targetUser.tag} 님이 **${durationMinutes}분** 동안 타임아웃 제재를 받았어요!`)
           .addFields(
             { name: '대상 유저', value: `${targetUser} (${targetUser.id})`, inline: true },
             { name: '제재 시간', value: `${durationMinutes}분`, inline: true },
@@ -747,7 +938,7 @@ module.exports = {
 
           if (actionType === 'timeout') {
             if (!timeVal || !unit) {
-              return interaction.reply({ content: "❌ 타임아웃 제재 시에는 **시간**과 **단위** 옵션을 모두 입력하셔야 합니다.", ephemeral: true });
+              return interaction.reply({ content: "❌ 타임아웃 제재 시에는 **시간**과 **단위** 옵션을 모두 입력해주셔야 해요!", ephemeral: true });
             }
           }
 
@@ -768,7 +959,7 @@ module.exports = {
             function(err) {
               if (err) {
                 console.error(err);
-                return interaction.reply({ content: "❌ 제재 설정을 저장하는 도중 오류가 발생했습니다.", ephemeral: true });
+                 return interaction.reply({ content: "❌ 제재 설정을 저장하는 도중에 오류가 발생해버렸어요!", ephemeral: true });
               }
 
               let actionName = actionType === 'timeout' ? '타임아웃' : (actionType === 'kick' ? '추방' : '차단');
@@ -776,7 +967,7 @@ module.exports = {
 
               const embed = new EmbedBuilder()
                 .setTitle("🛡️ 경고 자동 제재 설정 완료")
-                .setDescription(`누적 경고 횟수에 따른 자동 제재 조치가 설정되었습니다.`)
+                .setDescription(`누적 경고 횟수에 따른 자동 제재 조치를 설정해드렸어요!`)
                 .addFields(
                   { name: "누적 경고 횟수", value: `**${warningCount}회**`, inline: true },
                   { name: "제재 유형", value: `**${actionName}${durationText}**`, inline: true }
@@ -796,16 +987,16 @@ module.exports = {
             function(err) {
               if (err) {
                 console.error(err);
-                return interaction.reply({ content: "❌ 제재 설정을 삭제하는 도중 오류가 발생했습니다.", ephemeral: true });
+                 return interaction.reply({ content: "❌ 제재 설정을 삭제하는 도중에 오류가 발생해버렸어요!", ephemeral: true });
               }
 
               if (this.changes === 0) {
-                return interaction.reply({ content: `❌ 누적 경고 **${warningCount}회**에 대한 제재 설정이 존재하지 않습니다.`, ephemeral: true });
+                 return interaction.reply({ content: `❌ 누적 경고 **${warningCount}회**에 대한 제재 설정이 존재하지 않아요... 다시 확인해볼까요?`, ephemeral: true });
               }
 
               const embed = new EmbedBuilder()
                 .setTitle("🗑️ 경고 자동 제재 삭제 완료")
-                .setDescription(`누적 경고 **${warningCount}회** 도달 시 적용되던 자동 제재 설정이 삭제되었습니다.`)
+                .setDescription(`누적 경고 **${warningCount}회** 도달 시 적용되던 자동 제재 설정을 삭제해드렸어요!`)
                 .setColor(SUCCESS_COLOR)
                 .setTimestamp();
 
@@ -819,7 +1010,7 @@ module.exports = {
             (err, rows) => {
               if (err) {
                 console.error(err);
-                return interaction.reply({ content: "❌ 제재 목록을 조회하는 도중 오류가 발생했습니다.", ephemeral: true });
+                 return interaction.reply({ content: "❌ 제재 목록을 조회하는 도중에 오류가 발생해버렸어요!", ephemeral: true });
               }
 
               const embed = new EmbedBuilder()
@@ -828,7 +1019,7 @@ module.exports = {
                 .setTimestamp();
 
               if (!rows || rows.length === 0) {
-                embed.setDescription("설정된 자동 제재 조치가 없습니다. `/경고제재 설정` 명령어로 첫 번째 규칙을 만들어보세요 !");
+                 embed.setDescription("설정된 자동 제재 조치가 하나도 없어요. `/경고제재 설정` 명령어로 첫 번째 규칙을 같이 만들어볼까요?");
                 return interaction.reply({ embeds: [embed] });
               }
 
@@ -867,13 +1058,13 @@ module.exports = {
         const user = interaction.user;
 
         if (!targetMessage) {
-          return interaction.reply({ content: '❌ 신고 대상 메시지를 찾을 수 없습니다.', ephemeral: true });
+          return interaction.reply({ content: '❌ 신고 대상 메시지를 찾을 수 없어요!', ephemeral: true });
         }
 
         const logChannel = await getGuildLogChannel(interaction.client, guild.id);
         if (!logChannel) {
           return interaction.reply({ 
-            content: '❌ 서버에 채팅 로그(log_chat) 채널이 설정되어 있지 않아 신고를 완료할 수 없습니다. 관리자에게 문의하세요.', 
+            content: '❌ 서버에 채팅 로그(log_chat) 채널이 설정되어 있지 않아 신고를 완료할 수 없어요! 관리자님께 문의해볼까요?', 
             ephemeral: true 
           });
         }
@@ -933,7 +1124,7 @@ module.exports = {
           components: [container],
           flags: [MessageFlags.IsComponentsV2]
         });
-        return interaction.reply({ content: '✅ 해당 메시지를 관리진에게 성공적으로 신고하였습니다.', ephemeral: true });
+        return interaction.reply({ content: '✅ 해당 메시지를 관리진분들께 성공적으로 신고해드렸어요!', ephemeral: true });
       }
     }
   ],
@@ -952,7 +1143,7 @@ module.exports = {
       // Ensure clicker is moderator
       if (customId.startsWith('report_') || customId.startsWith('delapprove_')) {
         if (!(await checkAdminPermission(member))) {
-          return interaction.reply({ content: '❌ 이 버튼이나 메뉴를 사용할 권한이 없습니다. (관리자 권한 필요)', ephemeral: true });
+          return interaction.reply({ content: '❌ 이 버튼이나 메뉴를 사용할 권한이 없어요! 관리자 권한이 필요해요.', ephemeral: true });
         }
       }
 
@@ -991,7 +1182,7 @@ module.exports = {
             }
           }
         } catch (e) {
-          await interaction.reply({ content: `❌ 메시지 삭제 실패: ${e.message}`, ephemeral: true });
+          await interaction.reply({ content: `❌ 메시지를 삭제하지 못했어요: ${e.message}`, ephemeral: true });
         }
       } 
       
@@ -1035,10 +1226,10 @@ module.exports = {
               flags: [MessageFlags.IsComponentsV2]
             });
           } else {
-            await interaction.reply({ content: '❌ 해당 유저를 타임아웃할 수 없거나 서버에 권한이 부족합니다.', ephemeral: true });
+            await interaction.reply({ content: '❌ 해당 유저분을 타임아웃할 수 없거나 봇의 권한이 부족해요!', ephemeral: true });
           }
         } catch (e) {
-          await interaction.reply({ content: `❌ 타임아웃 실패: ${e.message}`, ephemeral: true });
+          await interaction.reply({ content: `❌ 타임아웃 처리를 실패해버렸어요: ${e.message}`, ephemeral: true });
         }
       } 
       

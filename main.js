@@ -209,152 +209,7 @@ client.on('interactionCreate', async interaction => {
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
 
-  // Wrap interaction methods for dynamic Components V2 & Beta warning insertion
-  const originalReply = interaction.reply.bind(interaction);
-  const originalEditReply = interaction.editReply.bind(interaction);
-  const originalFollowUp = interaction.followUp.bind(interaction);
-
-  function transformOptions(options) {
-    if (!options) return options;
-
-    const { EmbedBuilder, ContainerBuilder, SectionBuilder, TextDisplayBuilder, ThumbnailBuilder, MessageFlags } = require('discord.js');
-    
-    // Normalize string/embed only inputs to object
-    if (typeof options === 'string') {
-      options = { content: options };
-    } else if (Array.isArray(options)) {
-      options = { embeds: options };
-    } else if (options instanceof EmbedBuilder) {
-      options = { embeds: [options] };
-    } else {
-      // Shallow clone to avoid mutating original command options in place
-      options = { ...options };
-    }
-
-    const defaultThumbnail = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&q=80&w=256&h=256';
-
-    // Helper to format section markdown
-    function buildMarkdown(title, description, fields) {
-      let markdownContent = '';
-      if (title) markdownContent += `# ${title}\n\n`;
-      if (description) markdownContent += `${description}\n\n`;
-      if (fields && fields.length > 0) {
-        markdownContent += fields.map(f => {
-          if (f.inline) {
-            return `**${f.name}**: ${f.value}`;
-          }
-          return `### ${f.name}\n${f.value}`;
-        }).join('\n\n');
-      }
-      return markdownContent.trim();
-    }
-
-    let itemsToConvert = [];
-
-    // 1. Collect standard embeds
-    if (options.embeds && options.embeds.length > 0) {
-      for (const embed of options.embeds) {
-        const data = embed.data || embed;
-        itemsToConvert.push({
-          title: data.title || '',
-          description: data.description || '',
-          fields: data.fields || [],
-          color: data.color || 0x3B82F6,
-          thumbnail: data.thumbnail?.url || null
-        });
-      }
-      delete options.embeds;
-    }
-
-    // 2. If there's plain text content, convert it to a V2 container too
-    if (options.content && options.content.trim()) {
-      itemsToConvert.push({
-        title: '',
-        description: options.content,
-        fields: [],
-        color: 0x3B82F6,
-        thumbnail: null
-      });
-      delete options.content;
-    }
-
-    // If there are any components in the original message, keep them or merge them
-    let originalMessageComponents = [];
-    if (options.components && options.components.length > 0) {
-      originalMessageComponents = [...options.components];
-      delete options.components;
-    }
-
-    let newComponents = [];
-
-    // 3. Build V2 Containers
-    if (itemsToConvert.length > 0) {
-      for (let i = 0; i < itemsToConvert.length; i++) {
-        const item = itemsToConvert[i];
-        let markdown = buildMarkdown(item.title, item.description, item.fields);
-
-        // Append the Beta notice as plain text at the bottom of the very last container!
-        if (i === itemsToConvert.length - 1) {
-          const betaNotice = `\n\n⚙️ **시아는 아직 베타버전이에요.** 버그 제보는 [공식 저장소 > 이슈탭](https://github.com/yunaseo21c/Xia/issues)에서 가이드라인을 지켜 업로드 해주세요.`;
-          markdown += betaNotice;
-        }
-
-        const container = new ContainerBuilder()
-          .setAccentColor(item.color)
-          .addSectionComponents(
-            new SectionBuilder()
-              .setThumbnailAccessory(
-                new ThumbnailBuilder().setURL(item.thumbnail || defaultThumbnail)
-              )
-              .addTextDisplayComponents(
-                new TextDisplayBuilder().setContent(markdown.trim() || '정보 없음')
-              )
-          );
-
-        // Merge original components into the first or last container as appropriate
-        if (i === itemsToConvert.length - 1 && originalMessageComponents.length > 0) {
-          for (const comp of originalMessageComponents) {
-            container.addActionRowComponents(comp);
-          }
-        }
-
-        newComponents.push(container);
-      }
-    } else {
-      if (originalMessageComponents.length > 0) {
-        newComponents.push(...originalMessageComponents);
-      }
-    }
-
-    options.components = newComponents;
-
-    // Ensure IsComponentsV2 flag is always set
-    if (options.flags) {
-      if (Array.isArray(options.flags)) {
-        if (!options.flags.includes(MessageFlags.IsComponentsV2)) {
-          options.flags.push(MessageFlags.IsComponentsV2);
-        }
-      } else {
-        options.flags = options.flags | MessageFlags.IsComponentsV2;
-      }
-    } else {
-      options.flags = [MessageFlags.IsComponentsV2];
-    }
-
-    return options;
-  }
-
-  interaction.reply = async (options) => {
-    return originalReply(transformOptions(options));
-  };
-
-  interaction.editReply = async (options) => {
-    return originalEditReply(transformOptions(options));
-  };
-
-  interaction.followUp = async (options) => {
-    return originalFollowUp(transformOptions(options));
-  };
+  // Standard discord embeds will be used without Components V2 conversion as per request.
 
   try {
     await command.execute(interaction);
@@ -363,8 +218,8 @@ client.on('interactionCreate', async interaction => {
     
     const { EmbedBuilder, MessageFlags } = require('discord.js');
     const errorEmbed = new EmbedBuilder()
-      .setTitle("⚠️ 오류가 발생했습니다")
-      .setDescription(`오류가 발생했습니다. 오류 메시지를 복사하여 이슈탭에 제보해주세요.\n\n**오류 메시지:**\n\`\`\`js\n${error.toString()}\n\`\`\``)
+      .setTitle("⚠️ 오류가 발생했어요")
+      .setDescription(`오류가 발생했어요. 아래의 오류코드를 복사하여 [공식 저장소 > 이슈탭](https://github.com/yunaseo21c/Xia/issues)에 등재해주세요.\n\n\`\`\`js\n${error.stack || error.toString()}\n\`\`\``)
       .setColor(0xEF4444)
       .setTimestamp();
 

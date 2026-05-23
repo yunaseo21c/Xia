@@ -26,12 +26,12 @@ const INFO_COLOR = 0x0000ff;
 // Embeds (Returning new instances to prevent state mutations)
 const PERMISSION_ERROR_EMBED = () => new EmbedBuilder()
   .setTitle("<:error_permission:1218502280232308777> 권한 없음")
-  .setDescription("해당 명령어를 사용할 수 있는 권한이 없습니다.\n역할이 부족한 것이 아니라, **등록이 안된 사용자**입니다.\n`/가입` 명령어를 통해 먼저 가입해 주세요!")
+  .setDescription("해당 명령어를 사용할 수 있는 권한이 없어요...\n역할이 부족한 게 아니라, 아직 **등록이 안 된 사용자**에요!\n`/가입` 명령어를 통해 먼저 가입해볼까요?")
   .setColor(MAIN_COLOR);
 
 const ACCESS_ERROR_EMBED = () => new EmbedBuilder()
   .setTitle("<:error_permission:1218502280232308777> 명령어 액세스 권한 없음")
-  .setDescription("해당 명령어를 사용할 수 있는 권한이 없습니다.\n역할이 부족한 것이 아니라, **등록이 안된 사용자**입니다.\n`/가입` 명령어를 통해 먼저 가입해 주세요!")
+  .setDescription("해당 명령어를 사용할 수 있는 권한이 없어요...\n역할이 부족한 게 아니라, 아직 **등록이 안 된 사용자**에요!\n`/가입` 명령어를 통해 먼저 가입해볼까요?")
   .setColor(MAIN_COLOR);
 
 module.exports = {
