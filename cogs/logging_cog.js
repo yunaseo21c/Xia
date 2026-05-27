@@ -417,11 +417,13 @@ async function getLogChannel(client, guildId, logType) {
             'log_enter_exit': '🚪-입퇴장-로그',
             'log_ban': '🛡️-차단-로그',
             'log_thread': '🧵-스레드-로그',
-            'log_update': '🔄-업데이트-로그',
+            'log_channel': '📁-채널-로그',
+            'log_update': '📢-봇공지-로그',
             'log_reaction': '🎭-반응-로그',
             'log_role': '🏷️-역할-로그',
             'log_timeout': '🔇-타임아웃-로그',
-            'log_sanction': '⚖️-제재-로그'
+            'log_sanction': '⚖️-제재-로그',
+            'log_nickname': '👤-닉네임-로그'
           };
           const threadName = logTypeLabels[logType] || `${logType}-로그`;
           
@@ -452,11 +454,13 @@ async function getLogChannel(client, guildId, logType) {
                 'log_enter_exit': '입/퇴장 로그',
                 'log_ban': '차단 로그',
                 'log_thread': '스레드 로그',
-                'log_update': '업데이트 로그',
+                'log_channel': '채널 로그',
+                'log_update': '봇 업데이트 공지',
                 'log_reaction': '반응 로그',
                 'log_role': '역할 로그',
                 'log_timeout': '타임아웃 로그',
-                'log_sanction': '제재 로그'
+                'log_sanction': '제재 로그',
+                'log_nickname': '닉네임 로그'
               };
               const logTypeName = logTypeNames[logType] || `${logType} 로그`;
               await thread.send({
@@ -1084,9 +1088,9 @@ module.exports = {
                 .setDescription('내역 저장 포맷 방식 (TXT / HTML / JSON)')
                 .setRequired(true)
                 .addChoices(
-                  { name: 'HTML (기존 미려한 디스코드 비주얼)', value: 'html' },
-                  { name: 'TXT (모바일 가독성 극대화 최적화)', value: 'txt' },
-                  { name: 'JSON (개발자용 구조화 데이터)', value: 'json' }
+                  { name: 'HTML', value: 'html' },
+                  { name: 'TXT', value: 'txt' },
+                  { name: 'JSON', value: 'json' }
                 )
             )
         ),
@@ -1120,9 +1124,9 @@ module.exports = {
           saveLogSettings(guildId, guildData);
 
           const labelMap = {
-            'html': 'HTML (디스코드 비주얼 스타일)',
-            'txt': 'TXT (모바일 최적화 텍스트)',
-            'json': 'JSON (구조화 백업 데이터)'
+            'html': 'HTML',
+            'txt': 'TXT',
+            'json': 'JSON'
           };
 
           const embed = new EmbedBuilder()
@@ -1162,11 +1166,13 @@ module.exports = {
             new StringSelectMenuOptionBuilder().setLabel('입/퇴장 로그').setValue('log_enter_exit').setDescription('유저 입장 및 퇴장 실시간 로깅').setEmoji('🚪'),
             new StringSelectMenuOptionBuilder().setLabel('차단 로그').setValue('log_ban').setDescription('유저 차단 실시간 로깅').setEmoji('🛡️'),
             new StringSelectMenuOptionBuilder().setLabel('스레드 로그').setValue('log_thread').setDescription('스레드 생성/삭제/업데이트 실시간 로깅').setEmoji('🧵'),
-            new StringSelectMenuOptionBuilder().setLabel('업데이트 로그').setValue('log_update').setDescription('서버 및 채널 설정 변경 실시간 로깅').setEmoji('🔄'),
+            new StringSelectMenuOptionBuilder().setLabel('채널 로그').setValue('log_channel').setDescription('채널 생성/삭제/설정 변경 실시간 로깅').setEmoji('📁'),
+            new StringSelectMenuOptionBuilder().setLabel('봇 업데이트 공지').setValue('log_update').setDescription('봇 새로운 업데이트 공지 소식 수신').setEmoji('📢'),
             new StringSelectMenuOptionBuilder().setLabel('반응 로그').setValue('log_reaction').setDescription('메시지 반응 추가/삭제 실시간 로깅').setEmoji('🎭'),
             new StringSelectMenuOptionBuilder().setLabel('역할 로그').setValue('log_role').setDescription('역할 생성/삭제/설정 변경 및 유저 역할 변경 실시간 로깅').setEmoji('🏷️'),
             new StringSelectMenuOptionBuilder().setLabel('타임아웃 로그').setValue('log_timeout').setDescription('멤버 타임아웃(활동 제한) 및 해제 실시간 로깅').setEmoji('🔇'),
-            new StringSelectMenuOptionBuilder().setLabel('제재 로그').setValue('log_sanction').setDescription('유저 제재(경고 부여, 경고 차감/삭제, 초기화) 실시간 로깅').setEmoji('⚖️')
+            new StringSelectMenuOptionBuilder().setLabel('제재 로그').setValue('log_sanction').setDescription('유저 제재(경고 부여, 경고 차감/삭제, 초기화) 실시간 로깅').setEmoji('⚖️'),
+            new StringSelectMenuOptionBuilder().setLabel('닉네임 로그').setValue('log_nickname').setDescription('유저 닉네임 변경 및 변경 수행자 감지 실시간 로깅').setEmoji('👤')
           );
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
@@ -1194,11 +1200,13 @@ module.exports = {
             'log_enter_exit': '입/퇴장',
             'log_ban': '차단',
             'log_thread': '스레드',
-            'log_update': '업데이트',
+            'log_channel': '채널',
+            'log_update': '봇 업데이트 공지',
             'log_reaction': '반응',
             'log_role': '역할',
             'log_timeout': '타임아웃',
-            'log_sanction': '제재'
+            'log_sanction': '제재',
+            'log_nickname': '닉네임'
           };
           const label = labelMap[logType];
 
@@ -1431,12 +1439,14 @@ module.exports = {
             new StringSelectMenuOptionBuilder().setLabel('입/퇴장 로그 해제').setValue('del_enter_exit').setDescription('입/퇴장 로그 연동 해제').setEmoji('🚪'),
             new StringSelectMenuOptionBuilder().setLabel('차단 로그 해제').setValue('del_ban').setDescription('차단 로그 연동 해제').setEmoji('🛡️'),
             new StringSelectMenuOptionBuilder().setLabel('스레드 로그 해제').setValue('del_thread').setDescription('스레드 로그 연동 해제').setEmoji('🧵'),
-            new StringSelectMenuOptionBuilder().setLabel('업데이트 로그 해제').setValue('del_update').setDescription('업데이트 로그 연동 해제').setEmoji('🔄'),
+            new StringSelectMenuOptionBuilder().setLabel('채널 로그 해제').setValue('del_channel').setDescription('채널 로그 연동 해제').setEmoji('📁'),
+            new StringSelectMenuOptionBuilder().setLabel('봇 업데이트 공지 해제').setValue('del_update').setDescription('봇 업데이트 공지 연동 해제').setEmoji('📢'),
             new StringSelectMenuOptionBuilder().setLabel('반응 로그 해제').setValue('del_reaction').setDescription('반응 로그 연동 해제').setEmoji('🎭'),
             new StringSelectMenuOptionBuilder().setLabel('역할 로그 해제').setValue('del_role').setDescription('역할 로그 연동 해제').setEmoji('🏷️'),
             new StringSelectMenuOptionBuilder().setLabel('타임아웃 로그 해제').setValue('del_timeout').setDescription('타임아웃 로그 연동 해제').setEmoji('🔇'),
             new StringSelectMenuOptionBuilder().setLabel('제재 로그 해제').setValue('del_sanction').setDescription('제재 로그 연동 해제').setEmoji('⚖️'),
-            new StringSelectMenuOptionBuilder().setLabel('로그 전체 삭제 (설정 초기화)').setValue('del_all').setDescription('모든 로그 채널 설정을 일괄 해제합니다.').setEmoji('🗑️')
+            new StringSelectMenuOptionBuilder().setLabel('닉네임 로그 해제').setValue('del_nickname').setDescription('닉네임 로그 연동 해제').setEmoji('👤'),
+            new StringSelectMenuOptionBuilder().setLabel('로그 전체 삭제').setValue('del_all').setDescription('모든 로그 채널 설정을 일괄 해제합니다.').setEmoji('🗑️')
           );
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
@@ -1498,11 +1508,13 @@ module.exports = {
             'del_enter_exit': 'log_enter_exit',
             'del_ban': 'log_ban',
             'del_thread': 'log_thread',
+            'del_channel': 'log_channel',
             'del_update': 'log_update',
             'del_reaction': 'log_reaction',
             'del_role': 'log_role',
             'del_timeout': 'log_timeout',
-            'del_sanction': 'log_sanction'
+            'del_sanction': 'log_sanction',
+            'del_nickname': 'log_nickname'
           };
           const logType = logTypeMap[delType];
 
@@ -1512,11 +1524,13 @@ module.exports = {
             'log_enter_exit': '입/퇴장',
             'log_ban': '차단',
             'log_thread': '스레드',
-            'log_update': '업데이트',
+            'log_channel': '채널',
+            'log_update': '봇 업데이트 공지',
             'log_reaction': '반응',
             'log_role': '역할',
             'log_timeout': '타임아웃',
-            'log_sanction': '제재'
+            'log_sanction': '제재',
+            'log_nickname': '닉네임'
           };
           const label = labelMap[logType];
 
@@ -1591,18 +1605,20 @@ module.exports = {
           'log_enter_exit': '🚪 입/퇴장 로그',
           'log_ban': '🛡️ 차단 로그',
           'log_thread': '🧵 스레드 로그',
-          'log_update': '🔄 업데이트 로그',
+          'log_channel': '📁 채널 로그',
+          'log_update': '📢 봇 업데이트 공지 로그',
           'log_reaction': '🎭 반응 로그',
           'log_role': '🏷️ 역할 로그',
           'log_timeout': '🔇 타임아웃 로그',
-          'log_sanction': '⚖️ 제재 로그'
+          'log_sanction': '⚖️ 제재 로그',
+          'log_nickname': '👤 닉네임 로그'
         };
 
         const purgeFormat = (guildData && guildData.purge_format) || 'html';
         const formatLabelMap = {
-          'html': 'HTML (디스코드 비주얼 스타일)',
-          'txt': 'TXT (모바일 가독성 최적화)',
-          'json': 'JSON (구조화 백업 데이터)'
+          'html': 'HTML',
+          'txt': 'TXT',
+          'json': 'JSON'
         };
 
         let activeCount = 0;
@@ -1613,10 +1629,56 @@ module.exports = {
         for (const [key, label] of Object.entries(labels)) {
           let chanMention = '❌ 미설정';
           if (guildData && guildData.channels && guildData.channels[key]) {
-            const chanId = guildData.channels[key].id;
-            const channel = interaction.guild.channels.cache.get(chanId);
+            const channelData = guildData.channels[key];
+            const chanId = channelData.id;
+            let channel = interaction.guild.channels.cache.get(chanId);
+            if (!channel) {
+              channel = await interaction.client.channels.fetch(chanId).catch(() => null);
+            }
             if (channel) {
-              chanMention = `${channel.toString()} (ID: \`${chanId}\`)`;
+              if (channelData.method === 'thread') {
+                const logTypeLabels = {
+                  'log_chat': '💬-채팅-로그',
+                  'log_voice': '🔊-음성-로그',
+                  'log_enter_exit': '🚪-입퇴장-로그',
+                  'log_ban': '🛡️-차단-로그',
+                  'log_thread': '🧵-스레드-로그',
+                  'log_channel': '📁-채널-로그',
+                  'log_update': '📢-봇공지-로그',
+                  'log_reaction': '🎭-반응-로그',
+                  'log_role': '🏷️-역할-로그',
+                  'log_timeout': '🔇-타임아웃-로그',
+                  'log_sanction': '⚖️-제재-로그',
+                  'log_nickname': '👤-닉네임-로그'
+                };
+                const threadName = logTypeLabels[key] || `${key}-로그`;
+                let thread = channel.threads?.cache.find(t => t.name === threadName);
+                if (!thread) {
+                  thread = interaction.guild.channels.cache.find(t => t.isThread() && t.parentId === chanId && t.name === threadName);
+                }
+                if (thread) {
+                  chanMention = `${thread.toString()} (ID: \`${thread.id}\`)`;
+                } else {
+                  try {
+                    const activeThreads = await channel.threads.fetchActive().catch(() => null);
+                    thread = activeThreads?.threads.find(t => t.name === threadName);
+                    if (!thread) {
+                      const archivedThreads = await channel.threads.fetchArchived().catch(() => null);
+                      thread = archivedThreads?.threads.find(t => t.name === threadName);
+                    }
+                  } catch (err) {
+                    console.error(`Failed to fetch threads for ${key}:`, err);
+                  }
+                  
+                  if (thread) {
+                    chanMention = `${thread.toString()} (ID: \`${thread.id}\`)`;
+                  } else {
+                    chanMention = `${channel.toString()} (스레드 미생성, 상위 ID: \`${chanId}\`)`;
+                  }
+                }
+              } else {
+                chanMention = `${channel.toString()} (ID: \`${chanId}\`)`;
+              }
               activeCount++;
             } else {
               chanMention = `⚠️ 채널 없음 (ID: \`${chanId}\`)`;
@@ -2505,6 +2567,64 @@ module.exports = {
       await logChannel.send({ embeds: [embed] }).catch(console.error);
     },
 
+    // Channel Settings Update Log
+    async channelUpdate(client, oldChannel, newChannel) {
+      if (!newChannel.guild || !agreedGuilds.has(newChannel.guild.id.toString())) return;
+      if (isChannelExcluded(newChannel.guild.id, newChannel.id)) return;
+
+      const logChannel = await getLogChannel(client, newChannel.guild.id, 'log_update');
+      if (!logChannel) return;
+
+      let executor = "알 수 없음";
+      let reason = "사유 없음";
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const auditLogs = await newChannel.guild.fetchAuditLogs({
+          limit: 5,
+          type: AuditLogEvent.ChannelUpdate
+        });
+        const entry = auditLogs.entries.find(e => 
+          e.targetId === newChannel.id && 
+          Math.abs(Date.now() - e.createdTimestamp) < 15000
+        );
+        if (entry) {
+          executor = `${entry.executor.tag} (${entry.executor.id})`;
+          reason = entry.reason || "사유 없음";
+        }
+      } catch (err) {
+        console.error("Failed to fetch audit logs for channel update:", err);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('🔄 채널 설정 업데이트')
+        .setColor(INFO_COLOR || MAIN_COLOR)
+        .setTimestamp();
+
+      const changes = [];
+      if (oldChannel.name !== newChannel.name) {
+        changes.push(`• **채널 이름**: \`#${oldChannel.name}\` ➡️ \`#${newChannel.name}\``);
+      }
+      if (oldChannel.topic !== newChannel.topic) {
+        changes.push(`• **채널 설명(주제)**:\n  - 변경 전: \`${oldChannel.topic || "없음"}\`\n  - 변경 후: \`${newChannel.topic || "없음"}\``);
+      }
+      if (oldChannel.rateLimitPerUser !== newChannel.rateLimitPerUser) {
+        changes.push(`• **슬로우 모드**: \`${oldChannel.rateLimitPerUser}초\` ➡️ \`${newChannel.rateLimitPerUser}초\``);
+      }
+      if (oldChannel.nsfw !== newChannel.nsfw) {
+        changes.push(`• **NSFW 설정**: \`${oldChannel.nsfw ? "ON" : "OFF"}\` ➡️ \`${newChannel.nsfw ? "ON" : "OFF"}\``);
+      }
+      if (oldChannel.parentId !== newChannel.parentId) {
+        const oldParent = oldChannel.parent ? `#${oldChannel.parent.name}` : "없음";
+        const newParent = newChannel.parent ? `#${newChannel.parent.name}` : "없음";
+        changes.push(`• **상위 카테고리**: \`${oldParent}\` ➡️ \`${newParent}\``);
+      }
+
+      if (changes.length === 0) return;
+
+      embed.setDescription(`**채널 ${newChannel.toString()}의 설정이 변경되었습니다.**\n\n• **수정자 (수행자)**: ${executor}\n• **수정 사유**: ${reason}\n\n**[변경 내역]**\n${changes.join('\n')}`);
+      await logChannel.send({ embeds: [embed] }).catch(console.error);
+    },
+
     // Guild Member Update: Timeout Logs & Role/Nickname Updates
     async guildMemberUpdate(client, before, after) {
       if (!after.guild || !agreedGuilds.has(after.guild.id.toString())) return;
@@ -2590,17 +2710,50 @@ module.exports = {
         }
       }
 
-      // 2. Nickname Changes (logged to log_update)
+      // 2. Nickname Changes (logged to log_nickname with fallback to log_update)
       if (before.nickname !== after.nickname) {
-        const logChannel = await getLogChannel(client, after.guild.id, 'log_update');
+        let logChannel = await getLogChannel(client, after.guild.id, 'log_nickname');
+        if (!logChannel) {
+          logChannel = await getLogChannel(client, after.guild.id, 'log_update');
+        }
         if (logChannel) {
+          let executor = "본인 또는 알 수 없음";
+          let oldNick = before.nickname;
+          let newNick = after.nickname;
+
+          try {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const auditLogs = await after.guild.fetchAuditLogs({
+              limit: 5,
+              type: AuditLogEvent.MemberUpdate
+            });
+            const entry = auditLogs.entries.find(e => 
+              e.targetId === after.id && 
+              e.changes.some(c => c.key === 'nick') &&
+              Math.abs(Date.now() - e.createdTimestamp) < 15000
+            );
+            if (entry) {
+              executor = `${entry.executor.tag} (${entry.executor.id})`;
+              const nickChange = entry.changes.find(c => c.key === 'nick');
+              if (nickChange) {
+                oldNick = nickChange.old;
+                newNick = nickChange.new;
+              }
+            } else {
+              executor = `${after.user.tag} (본인 직접 변경)`;
+            }
+          } catch (err) {
+            console.error("Failed to fetch audit logs for nickname update:", err);
+          }
+
           const embed = new EmbedBuilder()
-            .setTitle('🔄 멤버 닉네임 변경')
+            .setTitle('👤 멤버 닉네임 변경')
             .setDescription(`${after.toString()} 님의 서버 프로필 닉네임이 변경되었습니다.`)
             .setColor(INFO_COLOR || MAIN_COLOR)
             .addFields(
-              { name: "변경 전", value: `\`${before.nickname || before.user.username}\``, inline: true },
-              { name: "변경 후", value: `\`${after.nickname || after.user.username}\``, inline: true }
+              { name: "변경 전", value: `\`${oldNick || before.user.username}\``, inline: true },
+              { name: "변경 후", value: `\`${newNick || after.user.username}\``, inline: true },
+              { name: "수행자 (변경자)", value: executor, inline: false }
             )
             .setFooter({ text: `일시: ${timestamp} • 유저 ID: ${after.id}` });
 
@@ -2694,12 +2847,89 @@ module.exports = {
       await logChannel.send({ embeds: [embed] }).catch(console.error);
     },
 
+    // Channel Creation Log
+    async channelCreate(client, channel) {
+      if (!channel.guild || !agreedGuilds.has(channel.guild.id.toString())) return;
+      const logChannel = await getLogChannel(client, channel.guild.id, 'log_channel');
+      if (!logChannel) return;
+
+      let executor = "알 수 없음";
+      let reason = "사유 없음";
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const auditLogs = await channel.guild.fetchAuditLogs({
+          limit: 1,
+          type: AuditLogEvent.ChannelCreate
+        });
+        const entry = auditLogs.entries.first();
+        if (entry && entry.targetId === channel.id && Math.abs(Date.now() - entry.createdTimestamp) < 15000) {
+          executor = `${entry.executor.tag} (${entry.executor.id})`;
+          reason = entry.reason || "사유 없음";
+        }
+      } catch (err) {
+        console.error("Failed to fetch audit logs for channel create:", err);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('📁 채널 생성됨')
+        .setDescription(
+          `새로운 채널 **${channel.toString()}**이(가) 생성되었습니다.\n\n` +
+          `• **채널 이름**: \`#${channel.name}\`\n` +
+          `• **채널 ID**: \`${channel.id}\`\n` +
+          `• **채널 유형**: \`${channel.type}\`\n` +
+          `• **생성자**: ${executor}\n` +
+          `• **사유**: ${reason}`
+        )
+        .setColor(0x10B981) // Green
+        .setTimestamp();
+
+      await logChannel.send({ embeds: [embed] }).catch(console.error);
+    },
+
+    // Channel Deletion Log
+    async channelDelete(client, channel) {
+      if (!channel.guild || !agreedGuilds.has(channel.guild.id.toString())) return;
+      const logChannel = await getLogChannel(client, channel.guild.id, 'log_channel');
+      if (!logChannel) return;
+
+      let executor = "알 수 없음";
+      let reason = "사유 없음";
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const auditLogs = await channel.guild.fetchAuditLogs({
+          limit: 1,
+          type: AuditLogEvent.ChannelDelete
+        });
+        const entry = auditLogs.entries.first();
+        if (entry && entry.targetId === channel.id && Math.abs(Date.now() - entry.createdTimestamp) < 15000) {
+          executor = `${entry.executor.tag} (${entry.executor.id})`;
+          reason = entry.reason || "사유 없음";
+        }
+      } catch (err) {
+        console.error("Failed to fetch audit logs for channel delete:", err);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('📁 채널 삭제됨')
+        .setDescription(
+          `채널 **#${channel.name}**이(가) 삭제되었습니다.\n\n` +
+          `• **채널 이름**: \`#${channel.name}\`\n` +
+          `• **채널 ID**: \`${channel.id}\`\n` +
+          `• **삭제자**: ${executor}\n` +
+          `• **사유**: ${reason}`
+        )
+        .setColor(0xEF4444) // Red
+        .setTimestamp();
+
+      await logChannel.send({ embeds: [embed] }).catch(console.error);
+    },
+
     // Channel Settings Update Log
     async channelUpdate(client, oldChannel, newChannel) {
       if (!newChannel.guild || !agreedGuilds.has(newChannel.guild.id.toString())) return;
       if (isChannelExcluded(newChannel.guild.id, newChannel.id)) return;
 
-      const logChannel = await getLogChannel(client, newChannel.guild.id, 'log_update');
+      const logChannel = await getLogChannel(client, newChannel.guild.id, 'log_channel');
       if (!logChannel) return;
 
       const embed = new EmbedBuilder()
@@ -2907,6 +3137,17 @@ module.exports = {
       const emoji = reaction.emoji;
       const emojiDisplay = emoji.id ? `<:${emoji.name}:${emoji.id}>` : emoji.name;
 
+      let emojiUrl = null;
+      if (emoji.id) {
+        const ext = emoji.animated ? 'gif' : 'png';
+        emojiUrl = `https://cdn.discordapp.com/emojis/${emoji.id}.${ext}`;
+      } else {
+        const hex = Array.from(emoji.name)
+          .map(char => char.codePointAt(0).toString(16))
+          .join('-');
+        emojiUrl = `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${hex}.png`;
+      }
+
       if (contentPreview.length > 500) {
         contentPreview = contentPreview.substring(0, 500) + "...";
       }
@@ -2923,11 +3164,13 @@ module.exports = {
         .setDescription(
           `**${user.toString()} (${user.tag})** 님이 메시지에 반응을 추가했습니다.\n\n` +
           `• **추가된 반응**: ${emojiDisplay} (이름: \`${emoji.name}\`${emoji.id ? `, ID: \`${emoji.id}\`` : ''})\n` +
+          (emojiUrl ? `• **이모지 이미지 (CDN)**: [바로가기](${emojiUrl})\n` : '') +
           `• **대상 메시지 작성자**: ${authorMention}\n` +
           `• **대상 채널**: ${message.channel.toString()}\n` +
           `• **메시지 내용 바로가기**: [클릭하여 이동](${message.url})\n\n` +
           `**메시지 내용 미리보기:**\n\`\`\`\n${contentPreview}\n\`\`\``
         )
+        .setThumbnail(emojiUrl)
         .setColor(0x10B981) // Green
         .setTimestamp();
 
@@ -2979,6 +3222,17 @@ module.exports = {
       const emoji = reaction.emoji;
       const emojiDisplay = emoji.id ? `<:${emoji.name}:${emoji.id}>` : emoji.name;
 
+      let emojiUrl = null;
+      if (emoji.id) {
+        const ext = emoji.animated ? 'gif' : 'png';
+        emojiUrl = `https://cdn.discordapp.com/emojis/${emoji.id}.${ext}`;
+      } else {
+        const hex = Array.from(emoji.name)
+          .map(char => char.codePointAt(0).toString(16))
+          .join('-');
+        emojiUrl = `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${hex}.png`;
+      }
+
       if (contentPreview.length > 500) {
         contentPreview = contentPreview.substring(0, 500) + "...";
       }
@@ -2995,11 +3249,13 @@ module.exports = {
         .setDescription(
           `**${user.toString()} (${user.tag})** 님이 메시지에서 반응을 제거했습니다.\n\n` +
           `• **제거된 반응**: ${emojiDisplay} (이름: \`${emoji.name}\`${emoji.id ? `, ID: \`${emoji.id}\`` : ''})\n` +
+          (emojiUrl ? `• **이모지 이미지 (CDN)**: [바로가기](${emojiUrl})\n` : '') +
           `• **대상 메시지 작성자**: ${authorMention}\n` +
           `• **대상 채널**: ${message.channel.toString()}\n` +
           `• **메시지 내용 바로가기**: [클릭하여 이동](${message.url})\n\n` +
           `**메시지 내용 미리보기:**\n\`\`\`\n${contentPreview}\n\`\`\``
         )
+        .setThumbnail(emojiUrl)
         .setColor(0xEF4444) // Red
         .setTimestamp();
 
@@ -3067,10 +3323,20 @@ async function logWarningEvent(client, guildId, eventData) {
       }
     } else if (action === 'reset') {
       embed.setTitle('⚖️ [제재] 유저 경고 전체 초기화')
-        .setDescription(`${targetUser} 님의 모든 누적 경고가 깨끗하게 초기화되었습니다.`)
+        .setDescription(`${targetUser} 님의 모든 누적 경고가 전체 삭제되었습니다.`)
         .addFields(
           { name: '대상 유저', value: `${targetUser.tag || targetUser.username} (${targetUser.id})`, inline: true },
           { name: '처리 관리자', value: `${moderator.tag || moderator.username} (${moderator.id})`, inline: true }
+        );
+    } else if (action === 'edit_reason') {
+      embed.setTitle('⚖️ [제재] 제재 사유 수정')
+        .setDescription(`제재 고유 ID **#${warnId}**의 사유가 수정되었습니다.`)
+        .addFields(
+          { name: '대상 유저', value: targetUser.id ? `<@${targetUser.id}> (${targetUser.tag || targetUser.username})` : `${targetUser.tag || targetUser.username}`, inline: true },
+          { name: '제재 유형', value: `**${eventData.typeLabel || '알 수 없음'}**`, inline: true },
+          { name: '처리 관리자', value: `${moderator.tag || moderator.username} (${moderator.id})`, inline: true },
+          { name: '기존 사유', value: `\`${eventData.oldReason || '사유 미지정'}\``, inline: false },
+          { name: '변경된 사유', value: `**\`${reason}\`**`, inline: false }
         );
     }
 

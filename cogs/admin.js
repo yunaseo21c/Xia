@@ -46,6 +46,19 @@ function escapeHtml(text) {
     .replace(/'/g, "&#039;");
 }
 
+async function isBotOwner(interaction) {
+  if (!interaction.client.application.owner) {
+    await interaction.client.application.fetch().catch(() => null);
+  }
+  const owner = interaction.client.application.owner;
+  if (!owner) return false;
+  
+  if (owner.members) {
+    return owner.members.has(interaction.user.id);
+  }
+  return owner.id === interaction.user.id;
+}
+
 module.exports = {
   name: 'Admin',
   commands: [
@@ -594,6 +607,246 @@ module.exports = {
               }
             );
           }
+        }
+      }
+    },
+    {
+      data: new SlashCommandBuilder()
+        .setName('개발자전용')
+        .setDescription('봇 개발자(소유자) 전용 시스템 관리 및 테스트 명령어입니다.')
+        .addSubcommand(sub =>
+          sub.setName('코인지급')
+            .setDescription('특정 유저에게 시아코인을 지급하거나 차감합니다.')
+            .addUserOption(opt =>
+              opt.setName('대상')
+                .setDescription('시아코인을 조정할 대상 유저')
+                .setRequired(true)
+            )
+            .addIntegerOption(opt =>
+              opt.setName('수량')
+                .setDescription('조정할 코인 액수 (음수 시 차감)')
+                .setRequired(true)
+            )
+        )
+        .addSubcommand(sub =>
+          sub.setName('사전검색')
+            .setDescription('단어가 로컬 사전, EXTRA 풀 및 라이브 사전에 존재하는지 검사합니다.')
+            .addStringOption(opt =>
+              opt.setName('단어')
+                .setDescription('검색 및 검증할 단어')
+                .setRequired(true)
+            )
+        )
+        .addSubcommand(sub =>
+          sub.setName('세션초기화')
+            .setDescription('특정 채널의 끝말잇기 세션을 강제로 삭제하여 초기화합니다.')
+            .addChannelOption(opt =>
+              opt.setName('채널')
+                .setDescription('세션을 강제 복구할 끝말잇기 채널 (미입력 시 현재 채널)')
+                .setRequired(false)
+            )
+        )
+        .addSubcommand(sub =>
+          sub.setName('서버목록')
+            .setDescription('현재 봇이 서비스 중인 모든 서버의 활성 목록을 확인합니다.')
+        )
+        .addSubcommand(sub =>
+          sub.setName('시스템상태')
+            .setDescription('봇의 구동 시간, 프로세스 메모리, CPU 로드 등을 종합 진단합니다.')
+        ),
+      async execute(interaction) {
+        // 봇 개발자(소유자) 보안 검증
+        if (!(await isBotOwner(interaction))) {
+          return interaction.reply({
+            content: "❌ **이 명령어는 봇 개발자(소유자) 전용 명령어입니다.** 일반 서버 관리자나 사용자는 사용할 수 없습니다.",
+            ephemeral: true
+          });
+        }
+
+        const subcommand = interaction.options.getSubcommand();
+        const guild = interaction.guild;
+
+        if (subcommand === '코인지급') {
+          const targetUser = interaction.options.getUser('대상');
+          const amount = interaction.options.getInteger('수량');
+          const targetUserId = targetUser.id;
+
+          // 1. 유저 존재 확인/등록
+          db.run("INSERT OR IGNORE INTO economy (user_id, money) VALUES (?, 1000)", [targetUserId], (err) => {
+            if (err) {
+              console.error(err);
+              return interaction.reply({ content: `❌ DB 처리 중 오류가 발생했습니다: ${err.message}`, ephemeral: true });
+            }
+
+            // 2. 돈 수정
+            db.run("UPDATE economy SET money = money + ? WHERE user_id = ?", [amount, targetUserId], (err) => {
+              if (err) {
+                console.error(err);
+                return interaction.reply({ content: `❌ DB 처리 중 오류가 발생했습니다: ${err.message}`, ephemeral: true });
+              }
+
+              // 3. 갱신된 잔액 조회
+              db.get("SELECT money FROM economy WHERE user_id = ?", [targetUserId], async (err, row) => {
+                if (err) {
+                  console.error(err);
+                  return interaction.reply({ content: `❌ 잔액 조회 중 오류가 발생했습니다: ${err.message}`, ephemeral: true });
+                }
+
+                const balance = row ? row.money : 1000;
+                const embed = new EmbedBuilder()
+                  .setTitle("🪙 시아코인 개발자 강제 지급/차감")
+                  .setDescription(`개발자 권한으로 **${targetUser.toString()}** 님의 코인을 조정했습니다.`)
+                  .addFields(
+                    { name: "조정 액수", value: `${amount > 0 ? '+' : ''}${amount.toLocaleString()} 시아코인`, inline: true },
+                    { name: "최종 잔액", value: `**${balance.toLocaleString()}** 시아코인`, inline: true }
+                  )
+                  .setColor(MAIN_COLOR)
+                  .setTimestamp();
+
+                await interaction.reply({ embeds: [embed] });
+              });
+            });
+          });
+        } 
+        
+        else if (subcommand === '사전검색') {
+          const word = interaction.options.getString('단어').trim();
+          if (word.length < 2) {
+            return interaction.reply({ content: "❌ 단어는 최소 2글자 이상이어야 합니다.", ephemeral: true });
+          }
+
+          await interaction.deferReply();
+          
+          const wordchain = require('./wordchain');
+          if (!wordchain) {
+            return interaction.editReply({ content: "❌ 끝말잇기 모듈을 불러올 수 없습니다." });
+          }
+
+          const firstChar = word.charAt(0);
+          const inLocalDict = !!(wordchain.dictionary[firstChar] && wordchain.dictionary[firstChar].includes(word));
+          const inExtraWords = !!(wordchain.EXTRA_WORDS && wordchain.EXTRA_WORDS.has(word));
+          
+          let liveDef = null;
+          if (wordchain.fetchWordDefinition) {
+            liveDef = await wordchain.fetchWordDefinition(word);
+          }
+          const inLiveDict = !!liveDef;
+
+          const passed = inLocalDict || inExtraWords || inLiveDict;
+
+          const embed = new EmbedBuilder()
+            .setTitle(`📖 사전 검색 검증 - "${word}"`)
+            .setDescription(`끝말잇기 검증망에 따른 해당 단어의 분석 결과입니다.`)
+            .addFields(
+              { name: "1. 32만 로컬 사전", value: inLocalDict ? "✅ 존재함" : "❌ 없음", inline: true },
+              { name: "2. EXTRA 신조어 풀", value: inExtraWords ? "✅ 존재함" : "❌ 없음", inline: true },
+              { name: "3. Daum 사전 크롤링", value: inLiveDict ? "✅ 검색됨" : "❌ 검색 안 됨", inline: true },
+              { name: "최종 통과 여부", value: passed ? "🟢 **통과 가능 (유효한 단어)**" : "🔴 **탈락 (사전 누락 단어)**", inline: false }
+            )
+            .setColor(passed ? SUCCESS_COLOR : ERROR_COLOR)
+            .setTimestamp();
+
+          if (liveDef) {
+            embed.addFields({ name: "📖 Daum 사전 뜻풀이", value: liveDef.length > 1000 ? liveDef.slice(0, 1000) + '...' : liveDef });
+          }
+
+          await interaction.editReply({ embeds: [embed] });
+        } 
+        
+        else if (subcommand === '세션초기화') {
+          const targetChannel = interaction.options.getChannel('채널') || interaction.channel;
+          const wordchain = require('./wordchain');
+
+          if (!wordchain || !wordchain.sessions) {
+            return interaction.reply({ content: "❌ 끝말잇기 코그가 활성화되어 있지 않거나 세션 저장소에 접근할 수 없습니다.", ephemeral: true });
+          }
+
+          const hasSession = wordchain.sessions.has(targetChannel.id);
+          if (!hasSession) {
+            return interaction.reply({ content: `❌ ${targetChannel.toString()} 채널에서 진행 중인 끝말잇기 게임이 존재하지 않습니다.`, ephemeral: true });
+          }
+
+          const session = wordchain.sessions.get(targetChannel.id);
+          wordchain.sessions.delete(targetChannel.id);
+
+          if (session.messageId) {
+            const oldMsg = await targetChannel.messages.fetch(session.messageId).catch(() => null);
+            if (oldMsg) {
+              const failEmbed = new EmbedBuilder()
+                .setTitle("💥 끝말잇기 게임 강제 초기화")
+                .setDescription("개발자 강제 명령으로 이 채널의 끝말잇기 게임 세션이 완전히 초기화되었습니다. 🔄")
+                .setColor(ERROR_COLOR)
+                .setTimestamp();
+              await oldMsg.edit({ embeds: [failEmbed], components: [] }).catch(() => null);
+            }
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle("🔄 끝말잇기 세션 강제 초기화 완료")
+            .setDescription(`**${targetChannel.toString()}** 채널의 끝말잇기 세션을 강제로 삭제했습니다.\n이 채널의 게임 흐름이 완전히 초기화되었으며, 새로운 게임을 시작할 준비가 되었습니다.`)
+            .setColor(SUCCESS_COLOR)
+            .setTimestamp();
+
+          await interaction.reply({ embeds: [embed] });
+        } 
+        
+        else if (subcommand === '서버목록') {
+          const guilds = interaction.client.guilds.cache;
+          const guildList = Array.from(guilds.values());
+
+          let description = `현재 시아가 서비스 중인 서버 목록입니다. (총 **${guildList.length}개** 서버)\n\n`;
+
+          guildList.forEach((g, idx) => {
+            description += `**${idx + 1}. ${g.name}**\n`;
+            description += `  • ID: \`${g.id}\`\n`;
+            description += `  • 유저 수: \`${g.memberCount.toLocaleString()}명\`\n`;
+            description += `  • 소유자: <@${g.ownerId}> (ID: \`${g.ownerId}\`)\n\n`;
+          });
+
+          if (description.length > 4000) {
+            description = description.slice(0, 3900) + "\n\n*(서버 목록이 너무 길어 일부 생략되었습니다)*";
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle("🌐 시아 서비스 활성 서버 목록")
+            .setDescription(description)
+            .setColor(MAIN_COLOR)
+            .setTimestamp();
+
+          await interaction.reply({ embeds: [embed] });
+        } 
+        
+        else if (subcommand === '시스템상태') {
+          const os = require('os');
+          const uptime = process.uptime();
+          const days = Math.floor(uptime / (24 * 60 * 60));
+          const hours = Math.floor((uptime % (24 * 60 * 60)) / (60 * 60));
+          const minutes = Math.floor((uptime % (60 * 60)) / 60);
+          const seconds = Math.floor(uptime % 60);
+
+          const uptimeStr = `${days}일 ${hours}시간 ${minutes}분 ${seconds}초`;
+          const memoryUsage = process.memoryUsage();
+          const heapUsedMB = (memoryUsage.heapUsed / 1024 / 1024).toFixed(2);
+          const heapTotalMB = (memoryUsage.heapTotal / 1024 / 1024).toFixed(2);
+          const rssMB = (memoryUsage.rss / 1024 / 1024).toFixed(2);
+
+          const systemLoad = os.loadavg().map(v => v.toFixed(2)).join(', ');
+          const freeMemGB = (os.freemem() / 1024 / 1024 / 1024).toFixed(2);
+          const totalMemGB = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
+
+          const embed = new EmbedBuilder()
+            .setTitle("⚡ 시아 시스템 상태 진단")
+            .setDescription("현재 봇의 호스트 환경 및 내부 프로세스 실시간 상태 정보입니다.")
+            .addFields(
+              { name: "⏰ 봇 가동 시간 (Uptime)", value: `\`${uptimeStr}\``, inline: false },
+              { name: "🧠 프로세스 메모리", value: `• RSS: \`${rssMB} MB\`\n• Heap Used: \`${heapUsedMB} MB\` / \`${heapTotalMB} MB\``, inline: true },
+              { name: "🖥️ 호스트 OS 리소스", value: `• CPU Load (1/5/15m): \`${systemLoad}\`\n• Memory: \`${freeMemGB} GB\` / \`${totalMemGB} GB\` (Free/Total)`, inline: true },
+              { name: "🔌 Discord API 상태", value: `• Gateway Ping: \`${interaction.client.ws.ping}ms\`\n• 캐싱된 서버 수: \`${interaction.client.guilds.cache.size}개\`\n• 캐싱된 유저 수: \`${interaction.client.users.cache.size}명\``, inline: false }
+            )
+            .setColor(MAIN_COLOR)
+            .setTimestamp();
+
+          await interaction.reply({ embeds: [embed] });
         }
       }
     }

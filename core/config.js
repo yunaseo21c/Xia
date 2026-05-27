@@ -7,6 +7,7 @@ require('dotenv').config();
 const BETA_TOKEN = process.env.DISCORD_BETA_TOKEN;
 const TOKEN = process.env.DISCORD_TOKEN;
 const KOREANBOTS_TOKEN = process.env.KOREANBOTS_TOKEN;
+const RESTART_WEBHOOK_URL = process.env.RESTART_WEBHOOK_URL;
 
 // Bot Information
 const BOT_NAME = '시아'; // Changed from 'Bot Think[V2]' to '시아'
@@ -38,6 +39,7 @@ module.exports = {
   BETA_TOKEN,
   TOKEN,
   KOREANBOTS_TOKEN,
+  RESTART_WEBHOOK_URL,
   BOT_NAME,
   ALLOWED_USER_ID,
   NEW_SERVER_LOG_CHANNEL_ID,

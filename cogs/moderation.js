@@ -16,7 +16,7 @@ const {
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const { MAIN_COLOR, SUCCESS_COLOR, ERROR_COLOR, PERMISSION_ERROR_EMBED } = require('../core/config');
-const { checkAdminPermission } = require('../core/utils');
+const { checkAdminPermission, getNextWarnId, extractNaturalReason } = require('../core/utils');
 
 // Shared Database Setup
 const dbPath = path.join(process.cwd(), 'xiadb.db');
@@ -36,9 +36,21 @@ db.serialize(() => {
     guild_warn_id INTEGER
   )`);
 
+  // Warning Sequences Table (Auto-increment sequence keeper)
+  db.run(`CREATE TABLE IF NOT EXISTS warning_sequences (
+    guild_id TEXT PRIMARY KEY,
+    last_warn_id INTEGER
+  )`);
+
   // Try to add the column in case the table already exists without it
   db.run(`ALTER TABLE warnings ADD COLUMN guild_warn_id INTEGER`, (err) => {
     // Ignore "duplicate column name" error
+  });
+  db.run(`ALTER TABLE warnings ADD COLUMN type TEXT DEFAULT 'warn'`, (err) => {
+    // Ignore duplicate
+  });
+  db.run(`ALTER TABLE warnings ADD COLUMN duration INTEGER`, (err) => {
+    // Ignore duplicate
   });
 
   // Warning Sanctions Table
@@ -92,25 +104,32 @@ module.exports = {
           return interaction.reply({ embeds: [PERMISSION_ERROR_EMBED()], ephemeral: true });
         }
         const targetUser = interaction.options.getUser('대상');
-        const reason = interaction.options.getString('사유') || '사유 미지정';
+        const rawReason = interaction.options.getString('사유');
+        const reason = rawReason ? extractNaturalReason(rawReason, 'warn') : '사유 미지정';
         const guild = interaction.guild;
         const user = interaction.user;
 
+        const nextWarnId = await getNextWarnId(db, guild.id).catch(err => {
+          console.error(err);
+          return null;
+        });
+
+        if (nextWarnId === null) {
+          return interaction.reply({ content: '❌ 경고 시퀀스를 생성하는 중에 데이터베이스 오류가 발생해버렸어요...', ephemeral: true });
+        }
+
         db.run(
-          "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id) VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(guild_warn_id), 0) + 1 FROM warnings WHERE guild_id = ?))",
-          [guild.id, targetUser.id, user.id, reason, new Date().toISOString(), guild.id],
+          "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          [guild.id, targetUser.id, user.id, reason, new Date().toISOString(), nextWarnId, 'warn'],
           function(err) {
             if (err) {
               return interaction.reply({ content: '❌ 경고 저장 중에 오류가 발생해버렸어요... 다시 한 번 시도해볼까요?', ephemeral: true });
             }
 
-            const lastInsertedId = this.lastID;
+            const guildWarnId = nextWarnId;
 
-            db.get("SELECT guild_warn_id FROM warnings WHERE id = ?", [lastInsertedId], (err, warnRow) => {
-              const guildWarnId = (warnRow && warnRow.guild_warn_id) ? warnRow.guild_warn_id : lastInsertedId;
-
-              db.get("SELECT COUNT(*) as count FROM warnings WHERE guild_id = ? AND user_id = ?", [guild.id, targetUser.id], async (err, row) => {
-                const count = row ? row.count : 1;
+            db.get("SELECT COUNT(*) as count FROM warnings WHERE guild_id = ? AND user_id = ?", [guild.id, targetUser.id], async (err, row) => {
+              const count = row ? row.count : 1;
                 
                 const embed = new EmbedBuilder()
                   .setTitle('⚠️ 유저 경고 부여')
@@ -225,10 +244,9 @@ module.exports = {
                 }
               );
             });
-          });
-        }
-      );
-    }
+          }
+        );
+      }
     },
     {
       data: new SlashCommandBuilder()
@@ -293,7 +311,7 @@ module.exports = {
 
           const embed = new EmbedBuilder()
             .setTitle('✨ 경고 초기화 완료')
-            .setDescription(`${targetUser} 님의 모든 누적 경고를 깨끗하게 초기화해드렸어요!`)
+            .setDescription(`${targetUser} 님의 모든 누적 경고를 전체 삭제해드렸어요!`)
             .setColor(SUCCESS_COLOR)
             .setTimestamp();
 
@@ -417,101 +435,169 @@ module.exports = {
     },
     {
       data: new SlashCommandBuilder()
-        .setName('경고목록')
-        .setDescription('이 서버에 누적된 전체 경고 목록을 조회합니다.')
-        .addUserOption(option => 
-          option.setName('대상').setDescription('특정 유저의 경고 목록만 조회하려면 선택하세요.').setRequired(false)
+        .setName('제재목록')
+        .setDescription('서버 내 제재 내역 확인 또는 누적 경고 규칙을 조회합니다.')
+        .addSubcommand(sub =>
+          sub.setName('확인')
+            .setDescription('서버 전체 제재 기록 또는 특정 유저의 제재 기록을 확인합니다.')
+            .addUserOption(option => 
+              option.setName('대상').setDescription('특정 유저의 제재 기록만 필터링 조회합니다.').setRequired(false)
+            )
+        )
+        .addSubcommand(sub =>
+          sub.setName('규칙')
+            .setDescription('현재 설정된 누적 경고 자동 제재 규칙 목록을 확인합니다.')
         ),
       async execute(interaction) {
         if (!(await checkAdminPermission(interaction.member))) {
           return interaction.reply({ embeds: [PERMISSION_ERROR_EMBED()], ephemeral: true });
         }
 
+        const subcommand = interaction.options.getSubcommand();
         const guildId = interaction.guildId.toString();
-        const targetUser = interaction.options.getUser('대상');
 
-        let query = "SELECT COALESCE(guild_warn_id, id) as guild_warn_id, user_id, moderator_id, reason, timestamp FROM warnings WHERE guild_id = ? ORDER BY COALESCE(guild_warn_id, id) DESC";
-        let params = [guildId];
+        if (subcommand === '확인') {
+          const targetUser = interaction.options.getUser('대상');
 
-        if (targetUser) {
-          query = "SELECT COALESCE(guild_warn_id, id) as guild_warn_id, user_id, moderator_id, reason, timestamp FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY COALESCE(guild_warn_id, id) DESC";
-          params = [guildId, targetUser.id];
-        }
+          let query = "SELECT COALESCE(guild_warn_id, id) as guild_warn_id, user_id, moderator_id, reason, timestamp, type, duration FROM warnings WHERE guild_id = ? ORDER BY COALESCE(guild_warn_id, id) DESC";
+          let params = [guildId];
 
-        db.all(query, params, async (err, rows) => {
-          if (err) {
-            return interaction.reply({ content: '❌ 경고 목록을 조회하는 도중에 오류가 발생해버렸어요!', ephemeral: true });
+          if (targetUser) {
+            query = "SELECT COALESCE(guild_warn_id, id) as guild_warn_id, user_id, moderator_id, reason, timestamp, type, duration FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY COALESCE(guild_warn_id, id) DESC";
+            params = [guildId, targetUser.id];
           }
 
-          if (!rows || rows.length === 0) {
-            const emptyEmbed = new EmbedBuilder()
-              .setTitle(targetUser ? `📋 ${targetUser.username} 님의 경고 목록` : '📋 서버 전체 경고 목록')
-              .setDescription('아직 등록된 경고 기록이 하나도 없어요. ✨')
-              .setColor(MAIN_COLOR)
-              .setTimestamp();
-            return interaction.reply({ embeds: [emptyEmbed] });
-          }
-
-          const totalPages = Math.ceil(rows.length / 10);
-          let currentPage = 1;
-
-          const generatePage = (page) => {
-            const startIndex = (page - 1) * 10;
-            const pageWarnings = rows.slice(startIndex, startIndex + 10);
-
-            const embed = new EmbedBuilder()
-              .setTitle(targetUser ? `📋 ${targetUser.username} 님의 경고 목록` : '📋 서버 전체 경고 목록')
-              .setColor(MAIN_COLOR)
-              .setFooter({ text: `페이지 ${page} / ${totalPages} • 총 경고 수: ${rows.length}개` })
-              .setTimestamp();
-
-            const list = pageWarnings.map(row => 
-              `\`#${row.guild_warn_id}\` <@${row.user_id}> | 사유: \`${row.reason}\` (처리자: <@${row.moderator_id}>, ${new Date(row.timestamp).toLocaleDateString()})`
-            ).join('\n');
-
-            embed.setDescription(list);
-
-            const row = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId('warn_list_prev')
-                .setLabel('◀️ 이전')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === 1),
-              new ButtonBuilder()
-                .setCustomId('warn_list_next')
-                .setLabel('▶️ 다음')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === totalPages)
-            );
-
-            return { embeds: [embed], components: totalPages > 1 ? [row] : [] };
-          };
-
-          const replyMessage = await interaction.reply(generatePage(currentPage));
-          if (totalPages <= 1) return;
-
-          const collector = replyMessage.createMessageComponentCollector({
-            filter: (i) => i.user.id === interaction.user.id,
-            time: 60000
-          });
-
-          collector.on('collect', async (i) => {
-            if (i.customId === 'warn_list_prev') {
-              currentPage--;
-            } else if (i.customId === 'warn_list_next') {
-              currentPage++;
+          db.all(query, params, async (err, rows) => {
+            if (err) {
+              return interaction.reply({ content: '❌ 제재 목록을 조회하는 도중에 오류가 발생해버렸어요!', ephemeral: true });
             }
-            await i.update(generatePage(currentPage));
-          });
 
-          collector.on('end', () => {
-            const disabledRow = new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setCustomId('prev_disabled').setLabel('◀️ 이전').setStyle(ButtonStyle.Secondary).setDisabled(true),
-              new ButtonBuilder().setCustomId('next_disabled').setLabel('▶️ 다음').setStyle(ButtonStyle.Secondary).setDisabled(true)
-            );
-            interaction.editReply({ components: [disabledRow] }).catch(() => null);
+            if (!rows || rows.length === 0) {
+              const emptyEmbed = new EmbedBuilder()
+                .setTitle(targetUser ? `📋 ${targetUser.username} 님의 제재 기록` : '📋 서버 전체 제재 기록')
+                .setDescription('아직 등록된 제재 기록이 하나도 없어요. ✨')
+                .setColor(MAIN_COLOR)
+                .setTimestamp();
+              return interaction.reply({ embeds: [emptyEmbed] });
+            }
+
+            const totalPages = Math.ceil(rows.length / 10);
+            let currentPage = 1;
+
+            const generatePage = (page) => {
+              const startIndex = (page - 1) * 10;
+              const pageSanctions = rows.slice(startIndex, startIndex + 10);
+
+              const embed = new EmbedBuilder()
+                .setTitle(targetUser ? `📋 ${targetUser.username} 님의 제재 기록` : '📋 서버 전체 제재 기록')
+                .setDescription(targetUser ? `${targetUser} 님의 제재 세부 기록 목록입니다.` : '이 서버에서 집행된 관리 제재 내역입니다.')
+                .setColor(MAIN_COLOR)
+                .setFooter({ text: `페이지 ${page} / ${totalPages} • 총 제재 수: ${rows.length}개` })
+                .setTimestamp();
+
+              pageSanctions.forEach(row => {
+                const type = row.type || 'warn';
+                let typeLabel = '⚠️ 경고';
+                let extraText = '';
+                if (type === 'ban') typeLabel = '🚫 차단';
+                else if (type === 'timeout') {
+                  typeLabel = '⏳ 타임아웃';
+                  extraText = row.duration ? ` (${row.duration}분)` : '';
+                }
+                else if (type === 'kick') typeLabel = '👢 추방';
+                else if (type === 'unban') typeLabel = '🔓 차단해제';
+                else if (type === 'untimeout') typeLabel = '⏳ 타임해제';
+
+                embed.addFields({
+                  name: `📌 [제재 #${row.guild_warn_id}] ${typeLabel}${extraText}`,
+                  value: `• **대상 유저**: <@${row.user_id}>\n• **처리 관리자**: <@${row.moderator_id}>\n• **제재 사유**: \`${row.reason}\`\n• **일시**: ${new Date(row.timestamp).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}`,
+                  inline: false
+                });
+              });
+
+              const buttonRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setCustomId('sanction_list_prev')
+                  .setLabel('◀️ 이전')
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(page === 1),
+                new ButtonBuilder()
+                  .setCustomId('sanction_list_next')
+                  .setLabel('▶️ 다음')
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(page === totalPages)
+              );
+
+              return { embeds: [embed], components: totalPages > 1 ? [buttonRow] : [] };
+            };
+
+            const replyMessage = await interaction.reply(generatePage(currentPage));
+            if (totalPages <= 1) return;
+
+            const collector = replyMessage.createMessageComponentCollector({
+              filter: (i) => i.user.id === interaction.user.id,
+              time: 60000
+            });
+
+            collector.on('collect', async (i) => {
+              if (i.customId === 'sanction_list_prev') {
+                currentPage--;
+              } else if (i.customId === 'sanction_list_next') {
+                currentPage++;
+              }
+              await i.update(generatePage(currentPage));
+            });
+
+            collector.on('end', () => {
+              const disabledRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('prev_disabled').setLabel('◀️ 이전').setStyle(ButtonStyle.Secondary).setDisabled(true),
+                new ButtonBuilder().setCustomId('next_disabled').setLabel('▶️ 다음').setStyle(ButtonStyle.Secondary).setDisabled(true)
+              );
+              interaction.editReply({ components: [disabledRow] }).catch(() => null);
+            });
           });
-        });
+        } else if (subcommand === '규칙') {
+          db.all(
+            "SELECT warning_count, action_type, duration_value FROM server_warning_sanctions WHERE guild_id = ? ORDER BY warning_count ASC",
+            [guildId],
+            (err, rows) => {
+              if (err) {
+                console.error(err);
+                return interaction.reply({ content: "❌ 제재 규칙을 조회하는 도중에 오류가 발생해버렸어요!", ephemeral: true });
+              }
+
+              const embed = new EmbedBuilder()
+                .setTitle("📋 누적 경고 자동 제재 규칙 목록")
+                .setColor(MAIN_COLOR)
+                .setTimestamp();
+
+              if (!rows || rows.length === 0) {
+                embed.setDescription("설정된 자동 제재 규칙 조치가 하나도 없어요. `/경고제재 설정` 명령어로 첫 번째 규칙을 같이 만들어볼까요?");
+                return interaction.reply({ embeds: [embed] });
+              }
+
+              let desc = "경고가 누적되었을 때 자동으로 실행될 조치 규칙 목록입니다:\n\n";
+              rows.forEach(row => {
+                let actionName = row.action_type === 'timeout' ? '타임아웃' : (row.action_type === 'kick' ? '추방' : '차단');
+                let durationText = '';
+                if (row.action_type === 'timeout') {
+                  const val = row.duration_value;
+                  if (val >= 1440 && val % 1440 === 0) {
+                    durationText = ` (${val / 1440}일)`;
+                  } else if (val >= 60 && val % 60 === 0) {
+                    durationText = ` (${val / 60}시간)`;
+                  } else {
+                    durationText = ` (${val}분)`;
+                  }
+                }
+                desc += `• 경고 **${row.warning_count}회** 누적 시 ➡️ **${actionName}${durationText}**\n`;
+              });
+
+              embed.setDescription(desc);
+              return interaction.reply({ embeds: [embed] });
+            }
+          );
+        }
       }
     },
     {
@@ -544,10 +630,20 @@ module.exports = {
 
         await member.kick(reason);
 
+        // Save kick to sanctions log
+        const nextId = await getNextWarnId(db, guild.id).catch(() => null);
+        if (nextId) {
+          db.run(
+            "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [guild.id.toString(), targetUser.id.toString(), user.id.toString(), reason, new Date().toISOString(), nextId, 'kick']
+          );
+        }
+
         const embed = new EmbedBuilder()
           .setTitle('👢 유저 추방 완료')
           .setDescription(`${targetUser.tag} 님을 서버에서 성공적으로 추방해드렸어요!`)
           .addFields(
+            { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
             { name: '대상 유저', value: `${targetUser} (${targetUser.id})`, inline: true },
             { name: '처리 관리자', value: `${user}`, inline: true },
             { name: '사유', value: reason }
@@ -617,6 +713,15 @@ module.exports = {
             try {
               await guild.members.ban(targetId, { reason });
               successUsers.push(userDisplay);
+
+              // Save ban record to DB
+              const nextId = await getNextWarnId(db, guild.id).catch(() => null);
+              if (nextId) {
+                db.run(
+                  "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  [guild.id.toString(), targetId.toString(), user.id.toString(), reason, new Date().toISOString(), nextId, 'ban']
+                );
+              }
             } catch (e) {
               if (interaction.client.banCache) {
                 interaction.client.banCache.delete(`${guild.id}-${targetId}`);
@@ -665,8 +770,17 @@ module.exports = {
             executor: `${user.toString()} (${user.tag})`
           });
 
+          let nextId = null;
           try {
             await guild.members.ban(targetId, { reason });
+            // Save ban record to DB
+            nextId = await getNextWarnId(db, guild.id).catch(() => null);
+            if (nextId) {
+              db.run(
+                "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [guild.id.toString(), targetId.toString(), user.id.toString(), reason, new Date().toISOString(), nextId, 'ban']
+              );
+            }
           } catch (e) {
             if (interaction.client.banCache) {
               interaction.client.banCache.delete(`${guild.id}-${targetId}`);
@@ -678,6 +792,7 @@ module.exports = {
             .setTitle('🚫 유저 차단 완료')
             .setDescription(`${userDisplay} 님을 서버에서 영구 차단해드렸어요!`)
             .addFields(
+              { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
               { name: '대상 유저', value: userTag, inline: true },
               { name: '처리 관리자', value: `${user}`, inline: true },
               { name: '사유', value: reason }
@@ -796,8 +911,17 @@ module.exports = {
             executor: `${user.toString()} (${user.tag})`
           });
 
+          let nextId = null;
           try {
             await guild.bans.remove(targetId, reason);
+            // Save unban record to DB
+            nextId = await getNextWarnId(db, guild.id).catch(() => null);
+            if (nextId) {
+              db.run(
+                "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [guild.id.toString(), targetId.toString(), user.id.toString(), reason, new Date().toISOString(), nextId, 'unban']
+              );
+            }
           } catch (e) {
             if (interaction.client.unbanCache) {
               interaction.client.unbanCache.delete(`${guild.id}-${targetId}`);
@@ -809,6 +933,7 @@ module.exports = {
             .setTitle('🔓 유저 차단 해제 완료')
             .setDescription(`${userDisplay} 님의 차단을 성공적으로 해제해드렸어요!`)
             .addFields(
+              { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
               { name: '대상 유저', value: userTag, inline: true },
               { name: '처리 관리자', value: `${user}`, inline: true },
               { name: '사유', value: reason }
@@ -854,10 +979,20 @@ module.exports = {
 
         await member.timeout(durationMinutes * 60 * 1000, reason);
 
+        // Save timeout to sanctions log
+        const nextId = await getNextWarnId(db, guild.id).catch(() => null);
+        if (nextId) {
+          db.run(
+            "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [guild.id.toString(), targetUser.id.toString(), user.id.toString(), reason, new Date().toISOString(), nextId, 'timeout', durationMinutes]
+          );
+        }
+
         const embed = new EmbedBuilder()
           .setTitle('⏳ 유저 타임아웃 완료')
           .setDescription(`${targetUser.tag} 님이 **${durationMinutes}분** 동안 타임아웃 제재를 받았어요!`)
           .addFields(
+            { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
             { name: '대상 유저', value: `${targetUser} (${targetUser.id})`, inline: true },
             { name: '제재 시간', value: `${durationMinutes}분`, inline: true },
             { name: '사유', value: reason }
@@ -917,10 +1052,6 @@ module.exports = {
                 .setRequired(true)
                 .setMinValue(1)
             )
-        )
-        .addSubcommand(sub =>
-          sub.setName('목록')
-            .setDescription('현재 설정된 누적 경고 자동 제재 목록을 확인합니다.')
         ),
       async execute(interaction) {
         if (!(await checkAdminPermission(interaction.member))) {
@@ -1003,51 +1134,118 @@ module.exports = {
               return interaction.reply({ embeds: [embed] });
             }
           );
-        } else if (subcommand === '목록') {
-          db.all(
-            "SELECT warning_count, action_type, duration_value FROM server_warning_sanctions WHERE guild_id = ? ORDER BY warning_count ASC",
-            [guildId],
-            (err, rows) => {
-              if (err) {
-                console.error(err);
-                 return interaction.reply({ content: "❌ 제재 목록을 조회하는 도중에 오류가 발생해버렸어요!", ephemeral: true });
-              }
-
-              const embed = new EmbedBuilder()
-                .setTitle("📋 누적 경고 자동 제재 목록")
-                .setColor(MAIN_COLOR)
-                .setTimestamp();
-
-              if (!rows || rows.length === 0) {
-                 embed.setDescription("설정된 자동 제재 조치가 하나도 없어요. `/경고제재 설정` 명령어로 첫 번째 규칙을 같이 만들어볼까요?");
-                return interaction.reply({ embeds: [embed] });
-              }
-
-              let desc = "경고가 누적되었을 때 자동으로 실행될 조치 규칙 목록입니다:\n\n";
-              rows.forEach(row => {
-                let actionName = row.action_type === 'timeout' ? '타임아웃' : (row.action_type === 'kick' ? '추방' : '차단');
-                let durationText = '';
-                if (row.action_type === 'timeout') {
-                  const val = row.duration_value;
-                  if (val >= 1440 && val % 1440 === 0) {
-                    durationText = ` (${val / 1440}일)`;
-                  } else if (val >= 60 && val % 60 === 0) {
-                    durationText = ` (${val / 60}시간)`;
-                  } else {
-                    durationText = ` (${val}분)`;
-                  }
-                }
-                desc += `• 경고 **${row.warning_count}회** 누적 시 ➡️ **${actionName}${durationText}**\n`;
-              });
-
-              embed.setDescription(desc);
-              return interaction.reply({ embeds: [embed] });
-            }
-          );
         }
       }
     },
+    {
+      data: new SlashCommandBuilder()
+        .setName('사유수정')
+        .setDescription('특정 제재 기록의 사유를 수정합니다.')
+        .addIntegerOption(opt =>
+          opt.setName('id')
+            .setDescription('수정할 제재 기록의 고유 ID (예: 5)')
+            .setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt.setName('사유')
+            .setDescription('새로 등록할 제재 사유')
+            .setRequired(true)
+        ),
+      async execute(interaction) {
+        if (!(await checkAdminPermission(interaction.member))) {
+          return interaction.reply({ embeds: [PERMISSION_ERROR_EMBED()], ephemeral: true });
+        }
 
+        const guildId = interaction.guildId.toString();
+        const guildWarnId = interaction.options.getInteger('id');
+        const rawNewReason = interaction.options.getString('사유');
+        const newReason = extractNaturalReason(rawNewReason, 'warn');
+
+        db.get(
+          "SELECT user_id, reason, type, timestamp FROM warnings WHERE guild_id = ? AND guild_warn_id = ?",
+          [guildId, guildWarnId],
+          (err, row) => {
+            if (err) {
+              console.error(err);
+              return interaction.reply({ content: '❌ 제재 데이터를 조회하는 도중에 데이터베이스 오류가 발생해버렸어요!', ephemeral: true });
+            }
+
+            if (!row) {
+              return interaction.reply({ content: `❌ 이 서버에서 제재 ID **#${guildWarnId}**에 해당하는 제재 기록을 찾을 수 없어요.`, ephemeral: true });
+            }
+
+            db.run(
+              "UPDATE warnings SET reason = ? WHERE guild_id = ? AND guild_warn_id = ?",
+              [newReason, guildId, guildWarnId],
+              function(err) {
+                if (err) {
+                  console.error(err);
+                  return interaction.reply({ content: '❌ 제재 사유를 수정하는 도중에 오류가 발생해버렸어요!', ephemeral: true });
+                }
+
+                const type = row.type || 'warn';
+                let typeLabel = '⚠️ 경고';
+                if (type === 'ban') typeLabel = '🚫 차단';
+                else if (type === 'timeout') typeLabel = '⏳ 타임아웃';
+                else if (type === 'kick') typeLabel = '👢 추방';
+                else if (type === 'unban') typeLabel = '🔓 차단해제';
+                else if (type === 'untimeout') typeLabel = '⏳ 타임해제';
+
+                const embed = new EmbedBuilder()
+                  .setTitle('📝 제재 사유 수정 완료')
+                  .setDescription(`제재 ID **#${guildWarnId}**의 사유를 성공적으로 수정해드렸어요!`)
+                  .addFields(
+                    { name: '대상 유저', value: `<@${row.user_id}>`, inline: true },
+                    { name: '제재 유형', value: `**${typeLabel}**`, inline: true },
+                    { name: '기존 사유', value: `\`${row.reason || '사유 미지정'}\``, inline: false },
+                    { name: '변경된 사유', value: `**\`${newReason}\`**`, inline: false }
+                  )
+                  .setColor(SUCCESS_COLOR)
+                  .setTimestamp();
+
+                // Send edit log to log_sanction channel
+                interaction.client.users.fetch(row.user_id)
+                  .then(targetUser => {
+                    try {
+                      const loggingCog = require('./logging_cog');
+                      loggingCog.logWarning(interaction.client, guildId, {
+                        action: 'edit_reason',
+                        targetUser,
+                        moderator: interaction.user,
+                        warnId: guildWarnId,
+                        typeLabel,
+                        oldReason: row.reason,
+                        reason: newReason
+                      });
+                    } catch (logErr) {
+                      console.error("Failed to send warn edit log:", logErr);
+                    }
+                  })
+                  .catch(fetchErr => {
+                    console.error("Failed to fetch user for sanction edit logging:", fetchErr);
+                    try {
+                      const loggingCog = require('./logging_cog');
+                      loggingCog.logWarning(interaction.client, guildId, {
+                        action: 'edit_reason',
+                        targetUser: { id: row.user_id, tag: `알 수 없는 유저 (${row.user_id})`, username: `알 수 없는 유저` },
+                        moderator: interaction.user,
+                        warnId: guildWarnId,
+                        typeLabel,
+                        oldReason: row.reason,
+                        reason: newReason
+                      });
+                    } catch (logErr) {
+                      console.error("Failed to send fallback warn edit log:", logErr);
+                    }
+                  });
+
+                return interaction.reply({ embeds: [embed] });
+              }
+            );
+          }
+        );
+      }
+    },
     {
       data: new ContextMenuCommandBuilder()
         .setName('메시지 신고')

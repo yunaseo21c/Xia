@@ -3,12 +3,16 @@ const {
   EmbedBuilder, 
   ActionRowBuilder, 
   StringSelectMenuBuilder, 
-  StringSelectMenuOptionBuilder 
+  StringSelectMenuOptionBuilder,
+  MessageFlags
 } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const { MAIN_COLOR, ALLOWED_USER_ID, SUCCESS_COLOR, ERROR_COLOR } = require('../core/config');
-const { checkAdminPermission } = require('../core/utils');
+const { checkAdminPermission, getNextWarnId, extractNaturalReason } = require('../core/utils');
+
+// processedMessages Set to prevent duplicate message event trigger bugs
+const processedMessages = new Set();
 
 // Helper function to format date in Korea Time (KST)
 function formatKST(date) {
@@ -59,67 +63,7 @@ db.serialize(() => {
   )`);
 });
 
-// 자연어 명령어에서 사유(Reason)를 정밀하게 추출하는 헬퍼 함수
-function extractNaturalReason(query, actionType = 'warn') {
-  // 1. 멘션 제거
-  let text = query.replace(/<@!?\d+>/g, '').trim();
 
-  // 2. 숫자 및 단위 제거 (예: 1회, 2번, 5개 등)
-  text = text.replace(/\d+\s*(?:회|번|개|id|번째)/g, '').trim();
-  text = text.replace(/\b\d{1,2}\b/g, '').trim();
-
-  // 3. 명령어 핵심 키워드 제거
-  if (actionType === 'warn') {
-    text = text.replace(/경고|부여|설정|적용/g, '').trim();
-  } else {
-    text = text.replace(/경고|삭제|차감|제거|지워|취소|초기화/g, '').trim();
-  }
-
-  // 종결어미 및 불필요 접사 제거 (단어 끝부분 위주)
-  text = text.replace(/(?:해줘|해|줘|줄래|해주라|해주세요|해라|함|다|요|음|기|해볼까요|할게요|할게)$/, '').trim();
-
-  // 4. 사유 패턴 매칭 진행
-  
-  // A. 접두사 패턴: "사유: 도배", "사유는 욕설", "이유 도배" 등
-  const prefixPattern = /^(?:사유|이유)(?:\s*:\s*|\s+는\s+|\s+은\s+|\s+)(.+)$/;
-  const prefixMatch = text.match(prefixPattern);
-  if (prefixMatch && prefixMatch[1].trim()) {
-    return prefixMatch[1].trim();
-  }
-
-  // B. 접미사 패턴: "도배 사유로", "욕설 사유 때문에", "도배 사유" 등
-  const suffixPattern = /^(.*?)\s*(?:사유로|사유\s*때문에|사유)$/;
-  const suffixMatch = text.match(suffixPattern);
-  if (suffixMatch && suffixMatch[1].trim()) {
-    return suffixMatch[1].trim();
-  }
-
-  // C. 이유/조사 패턴: "도배 때문에", "실수로", "도배로" 등
-  const becausePattern = /^(.*?)\s*(?:때문에|으로|로)$/;
-  const becauseMatch = text.match(becausePattern);
-  if (becauseMatch && becauseMatch[1].trim()) {
-    const res = becauseMatch[1].trim();
-    // "경고로" 처럼 키워드 자체가 필터링되지 않고 유입된 경우는 무시
-    if (res.length > 0 && !/^(?:경고|삭제|차감|제거)$/.test(res)) {
-      return res;
-    }
-  }
-
-  // D. 문장 중간 또는 어디선가 "사유: 도배" 가 매칭되는 경우
-  const inlinePattern = /(?:사유|이유)(?:\s*:\s*|\s+는\s+|\s+은\s+|\s+)(.+)/;
-  const inlineMatch = text.match(inlinePattern);
-  if (inlineMatch && inlineMatch[1].trim()) {
-    return inlineMatch[1].trim();
-  }
-
-  // E. 남은 텍스트 전체를 사유로 간주 (단, 핵심 기능 키워드만 덜렁 남은 경우는 무시)
-  const cleanStr = text.replace(/[^a-zA-Z0-9가-힣\s]/g, '').trim();
-  if (cleanStr.length > 0 && !/^(?:해줘|해|줘|줄래|적용|설정)$/.test(cleanStr)) {
-    return text;
-  }
-
-  return "사유 미지정";
-}
 
 module.exports = {
   name: 'General',
@@ -149,7 +93,7 @@ module.exports = {
         const mainEmbed = new EmbedBuilder()
           .setTitle("📖 시아 가이드 센터")
           .setDescription(
-            `안녕하세요! 서버 관리 봇 **시아(Sia)**입니다. ✨\n` +
+            `안녕하세요! 서버 관리 봇 **시아(Xia)**입니다. ✨\n` +
             `아래 드롭다운 메뉴를 클릭하여 확인하고 싶은 카테고리를 선택해 주세요.\n\n` +
             `💬 카테고리를 선택하시면 **하단에 상세 명령어 가이드 임베드가 추가**됩니다!\n` +
             (isAdmin ? `🔒 **관리자 전용** 카테고리도 표시됩니다.` : `🔒 관리자 전용 카테고리는 등록된 관리자만 열람할 수 있습니다.`)
@@ -499,6 +443,93 @@ module.exports = {
     },
     {
       data: new SlashCommandBuilder()
+        .setName('날씨')
+        .setDescription('지정된 위치의 실시간 기상 상태 및 기온 정보를 조회합니다.')
+        .addStringOption(option =>
+          option.setName('위치')
+            .setDescription('날씨 정보를 조회할 도시명 또는 지역명 (예: 서울, Tokyo)')
+            .setRequired(true)
+        ),
+      async execute(interaction) {
+        const location = interaction.options.getString('위치');
+        const apiKey = process.env.OPENWEATHER_API_KEY;
+
+        if (!apiKey) {
+          return interaction.reply({
+            content: "❌ 현재 날씨 조회 서비스가 활성화되어 있지 않아요 ! 관리자에게 문의해 주세요.",
+            flags: [MessageFlags.Ephemeral]
+          });
+        }
+
+        await interaction.deferReply();
+
+        try {
+          const response = await fetch(
+            `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(location)}&appid=${apiKey}&units=metric&lang=kr`
+          );
+
+          if (!response.ok) {
+            return interaction.editReply({
+              content: `❌ **'${location}'**의 날씨 정보를 조회할 수 없었습니다. 영문 도시명(예: Seoul, Busan)을 사용하거나 오타를 확인해볼까요?`
+            });
+          }
+
+          const data = await response.json();
+
+          const temp = data.main.temp;
+          const feelsLike = data.main.feels_like;
+          const tempMin = data.main.temp_min;
+          const tempMax = data.main.temp_max;
+          const humidity = data.main.humidity;
+          const pressure = data.main.pressure;
+          const windSpeed = data.wind.speed;
+          const description = data.weather[0].description;
+          const iconCode = data.weather[0].icon;
+
+          // Icon map to emojis
+          const iconPrefix = iconCode.substring(0, 2);
+          const emojiMap = {
+            '01': '☀️', // Clear sky
+            '02': '⛅', // Few clouds
+            '03': '☁️', // Scattered clouds
+            '04': '☁️', // Broken clouds
+            '09': '🌧️', // Shower rain
+            '10': '🌦️', // Rain
+            '11': '⛈️', // Thunderstorm
+            '13': '❄️', // Snow
+            '50': '🌫️'  // Mist
+          };
+          const emoji = emojiMap[iconPrefix] || '🌈';
+
+          const embed = new EmbedBuilder()
+            .setTitle(`${emoji} ${data.name} 실시간 기상 상태 (${data.sys.country})`)
+            .setDescription(`**${location}** 지역의 현재 실시간 기상 요약 카드 정보입니다.`)
+            .addFields(
+              { name: '🌡️ 현재 기온', value: `\`${temp.toFixed(1)}°C\``, inline: true },
+              { name: '🌡️ 체감 기온', value: `\`${feelsLike.toFixed(1)}°C\``, inline: true },
+              { name: '🎨 기상 상태', value: `\`${description}\``, inline: true },
+              { name: '📈 최고 기온', value: `\`${tempMax.toFixed(1)}°C\``, inline: true },
+              { name: '📉 최저 기온', value: `\`${tempMin.toFixed(1)}°C\``, inline: true },
+              { name: '💦 실시간 습도', value: `\`${humidity}%\``, inline: true },
+              { name: '💨 풍속', value: `\`${windSpeed} m/s\``, inline: true },
+              { name: '🌀 대기압', value: `\`${pressure} hPa\``, inline: true }
+            )
+            .setColor(MAIN_COLOR)
+            .setFooter({ text: '오픈웨더 실시간 연동 정보 • 저장되지 않는 검색 결과입니다.' })
+            .setTimestamp();
+
+          await interaction.editReply({ embeds: [embed] });
+
+        } catch (error) {
+          console.error("Error fetching weather data:", error);
+          await interaction.editReply({
+            content: `❌ 날씨 정보를 가져오는 과정에서 서버 오류가 발생해버렸어요! 잠시 후 다시 시도해볼까요?`
+          });
+        }
+      }
+    },
+    {
+      data: new SlashCommandBuilder()
         .setName('초대')
         .setDescription('봇 초대링크를 알 수 있습니다.'),
       async execute(interaction) {
@@ -541,11 +572,53 @@ module.exports = {
     {
       data: new SlashCommandBuilder()
         .setName('서버정보')
-        .setDescription('해당 서버에 관한 상세한 정보를 조회합니다.'),
+        .setDescription('해당 서버에 관한 상세한 정보를 조회합니다.')
+        .addStringOption(option =>
+          option.setName('보기')
+            .setDescription('조회할 정보 분류를 선택하세요.')
+            .setRequired(false)
+            .addChoices(
+              { name: '기본 정보', value: 'info' },
+              { name: '역할 목록', value: 'roles' }
+            )
+        ),
       async execute(interaction) {
+        const view = interaction.options.getString('보기') || 'info';
         const guild = interaction.guild;
         if (!guild) {
           return interaction.reply({ content: "이 명령어는 서버 내에서만 사용 가능합니다.", ephemeral: true });
+        }
+
+        if (view === 'roles') {
+          const roles = guild.roles.cache.sort((a, b) => b.position - a.position).filter(r => r.name !== '@everyone');
+          const embed = new EmbedBuilder()
+            .setTitle(`🔖 ${guild.name} 서버의 전체 역할 목록 (${roles.size}개)`)
+            .setColor(MAIN_COLOR)
+            .setTimestamp();
+          
+          const fields = [];
+          let currentFieldText = "";
+          let fieldIndex = 1;
+
+          roles.forEach(role => {
+            const roleStr = `${role.toString()} (\`${role.id}\` | 멤버: \`${role.members.size}명\`)\n`;
+            if (currentFieldText.length + roleStr.length > 950) {
+              fields.push({ name: `역할 목록 (페이지 ${fieldIndex})`, value: currentFieldText, inline: false });
+              currentFieldText = roleStr;
+              fieldIndex++;
+            } else {
+              currentFieldText += roleStr;
+            }
+          });
+
+          if (currentFieldText) {
+            fields.push({ name: `역할 목록 (페이지 ${fieldIndex})`, value: currentFieldText, inline: false });
+          } else {
+            fields.push({ name: '역할 목록', value: '역할이 존재하지 않습니다.', inline: false });
+          }
+
+          embed.addFields(fields);
+          return interaction.reply({ embeds: [embed] });
         }
 
         let owner = "없음";
@@ -608,11 +681,56 @@ module.exports = {
           option.setName('유저')
             .setDescription('정보를 확인할 유저')
             .setRequired(false)
+        )
+        .addStringOption(option =>
+          option.setName('보기')
+            .setDescription('조회할 정보 분류를 선택하세요.')
+            .setRequired(false)
+            .addChoices(
+              { name: '기본 정보', value: 'info' },
+              { name: '역할 목록', value: 'roles' }
+            )
         ),
       async execute(interaction) {
         const userOption = interaction.options.getUser('유저');
         const user = userOption || interaction.user;
+        const view = interaction.options.getString('보기') || 'info';
         const member = interaction.guild ? await interaction.guild.members.fetch(user.id).catch(() => null) : null;
+
+        if (view === 'roles') {
+          if (!member) {
+            return interaction.reply({ content: "❌ 서버 멤버 정보가 존재하지 않아 역할을 조회할 수 없어요.", ephemeral: true });
+          }
+          const memberRoles = member.roles.cache.sort((a, b) => b.position - a.position).filter(r => r.name !== '@everyone');
+          const embed = new EmbedBuilder()
+            .setTitle(`🔖 ${user.username} 님의 전체 역할 목록 (${memberRoles.size}개)`)
+            .setColor(MAIN_COLOR)
+            .setTimestamp();
+          
+          const fields = [];
+          let currentFieldText = "";
+          let fieldIndex = 1;
+
+          memberRoles.forEach(role => {
+            const roleStr = `${role.toString()} (\`${role.id}\`)\n`;
+            if (currentFieldText.length + roleStr.length > 950) {
+              fields.push({ name: `소유한 역할 (페이지 ${fieldIndex})`, value: currentFieldText, inline: false });
+              currentFieldText = roleStr;
+              fieldIndex++;
+            } else {
+              currentFieldText += roleStr;
+            }
+          });
+
+          if (currentFieldText) {
+            fields.push({ name: `소유한 역할 (페이지 ${fieldIndex})`, value: currentFieldText, inline: false });
+          } else {
+            fields.push({ name: '소유한 역할', value: '지정된 역할이 없습니다.', inline: false });
+          }
+
+          embed.addFields(fields);
+          return interaction.reply({ embeds: [embed] });
+        }
         
         const embed = new EmbedBuilder()
           .setTitle("👤 유저 상세 프로필")
@@ -659,6 +777,58 @@ module.exports = {
 
         await interaction.reply({ embeds: [embed] });
       }
+    },
+    {
+      data: new SlashCommandBuilder()
+        .setName('시아야')
+        .setDescription('시아야 대화 설정을 관리합니다.')
+        .addSubcommand(subcommand =>
+          subcommand.setName('설정')
+            .setDescription('시아야 대화 방식을 설정합니다.')
+            .addStringOption(option =>
+              option.setName('방식')
+                .setDescription('대화 방식을 선택하세요.')
+                .setRequired(true)
+                .addChoices(
+                  { name: '일반 대화', value: 'normal' },
+                  { name: 'AI 대화', value: 'ai' }
+                )
+            )
+        ),
+      async execute(interaction) {
+        const subcommand = interaction.options.getSubcommand();
+        if (subcommand === '설정') {
+          const { user, options } = interaction;
+          const mode = options.getString('방식');
+          
+          let deferred = false;
+          await interaction.deferReply({ flags: [MessageFlags.Ephemeral] })
+            .then(() => { deferred = true; })
+            .catch(err => console.error("deferReply failed for /시아야 설정:", err));
+          
+          if (!deferred) return;
+          
+          db.get("SELECT has_access FROM ai_access WHERE user_id = ?", [user.id], (err, row) => {
+            if (err) {
+              console.error(err);
+              return interaction.editReply({ content: '❌ 데이터베이스 조회 도중 오류가 발생했습니다.' }).catch(() => {});
+            }
+            
+            if (!row || row.has_access !== 1) {
+              return interaction.editReply({ content: '❌ **시아 AI 개인 대화 접근 권한이 없어요!**\n`/ai구매` 명령어를 통해 먼저 권한을 구매해주셔야 사용이 가능하답니다!' }).catch(() => {});
+            }
+            
+            db.run("UPDATE ai_access SET mode = ? WHERE user_id = ?", [mode, user.id], (err) => {
+              if (err) {
+                console.error(err);
+                return interaction.editReply({ content: '❌ 설정 변경 중 데이터베이스 오류가 발생했습니다.' }).catch(() => {});
+              }
+              const modeLabel = mode === 'ai' ? '🤖 **AI 모드**' : '🌸 **일반 모드**';
+              return interaction.editReply({ content: `✅ 대화 방식이 ${modeLabel}로 성공적으로 변경되었어요! 이제 "시아야 ~"로 말을 걸면 설정된 방식으로 대답해드릴게요!` }).catch(() => {});
+            });
+          });
+        }
+      }
     }
   ],
   listeners: {
@@ -667,6 +837,10 @@ module.exports = {
 
       const content = message.content.trim();
       if (content.startsWith('시아야')) {
+        if (processedMessages.has(message.id)) return;
+        processedMessages.add(message.id);
+        setTimeout(() => processedMessages.delete(message.id), 10000);
+
         try {
           await message.channel.sendTyping().catch(console.error);
           const query = content.slice(3).trim();
@@ -925,24 +1099,7 @@ module.exports = {
                 return message.reply("❌ **해당 유저는 현재 차단된 상태가 아니에요.**").catch(console.error);
               }
 
-              let reason = "사유 미지정";
-              const queryWithoutMention = query.replace(/<@!?\d+>/g, '').trim();
-              let cleanQuery = queryWithoutMention
-                .replace(/차단|밴|영구|해제|풀어|풀기/g, '')
-                .replace(/해줘|해|줘|설정|적용/g, '')
-                .trim();
-
-              const reasonMatch = 
-                cleanQuery.match(/(.+?)\s*사유로/) || 
-                cleanQuery.match(/(.+?)\s*사유/) || 
-                cleanQuery.match(/(.+?)\s*(?:으로|로)/) ||
-                cleanQuery.match(/(.+?)\s*때문에/);
-
-              if (reasonMatch) {
-                reason = reasonMatch[1].trim();
-              } else if (cleanQuery.length > 0) {
-                reason = cleanQuery;
-              }
+              const reason = extractNaturalReason(query, 'subtract');
 
               message.client.unbanCache = message.client.unbanCache || new Map();
               message.client.unbanCache.set(`${message.guild.id}-${targetUserId}`, {
@@ -950,8 +1107,17 @@ module.exports = {
                 executor: `${message.author.toString()} (${message.author.tag})`
               });
 
+              let nextId = null;
               try {
                 await message.guild.bans.remove(targetUserId, reason);
+                // Save unban record to DB
+                nextId = await getNextWarnId(db, message.guild.id).catch(() => null);
+                if (nextId) {
+                  db.run(
+                    "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [message.guild.id.toString(), targetUserId.toString(), message.author.id.toString(), reason, new Date().toISOString(), nextId, 'unban']
+                  );
+                }
               } catch (err) {
                 if (message.client.unbanCache) {
                   message.client.unbanCache.delete(`${message.guild.id}-${targetUserId}`);
@@ -962,7 +1128,12 @@ module.exports = {
 
               const embed = new EmbedBuilder()
                 .setTitle("🛡️ 차단 해제 완료")
-                .setDescription(`${targetUser.toString()}님의 차단을 성공적으로 해제해드렸어요!\n\n• **사유**: ${reason}\n• **집행 관리자**: ${message.author.toString()}`)
+                .setDescription(`${targetUser.toString()}님의 차단을 성공적으로 해제해드렸어요!`)
+                .addFields(
+                  { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
+                  { name: '사유', value: reason, inline: true },
+                  { name: '집행 관리자', value: message.author.toString(), inline: true }
+                )
                 .setColor(MAIN_COLOR)
                 .setTimestamp();
 
@@ -987,24 +1158,7 @@ module.exports = {
                 return message.reply("❌ **해당 유저는 저보다 권한이 높거나 동등하여 조치할 수 없어요.**").catch(console.error);
               }
 
-              let reason = "사유 미지정";
-              const queryWithoutMention = query.replace(/<@!?\d+>/g, '').trim();
-              let cleanQuery = queryWithoutMention
-                .replace(/타임아웃|뮤트|음소거|해제|풀어|풀기/g, '')
-                .replace(/해줘|해|줘|설정|적용/g, '')
-                .trim();
-
-              const reasonMatch = 
-                cleanQuery.match(/(.+?)\s*사유로/) || 
-                cleanQuery.match(/(.+?)\s*사유/) || 
-                cleanQuery.match(/(.+?)\s*(?:으로|로)/) ||
-                cleanQuery.match(/(.+?)\s*때문에/);
-
-              if (reasonMatch) {
-                reason = reasonMatch[1].trim();
-              } else if (cleanQuery.length > 0) {
-                reason = cleanQuery;
-              }
+              const reason = extractNaturalReason(query, 'subtract');
 
               message.client.timeoutCache = message.client.timeoutCache || new Map();
               message.client.timeoutCache.set(`${message.guild.id}-${targetMember.id}`, {
@@ -1012,8 +1166,17 @@ module.exports = {
                 executor: `${message.author.toString()} (${message.author.tag})`
               });
 
+              let nextId = null;
               try {
                 await targetMember.timeout(null, reason);
+                // Save untimeout record to DB
+                nextId = await getNextWarnId(db, message.guild.id).catch(() => null);
+                if (nextId) {
+                  db.run(
+                    "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [message.guild.id.toString(), targetMember.id.toString(), message.author.id.toString(), reason, new Date().toISOString(), nextId, 'untimeout']
+                  );
+                }
               } catch (err) {
                 if (message.client.timeoutCache) {
                   message.client.timeoutCache.delete(`${message.guild.id}-${targetMember.id}`);
@@ -1024,7 +1187,12 @@ module.exports = {
 
               const embed = new EmbedBuilder()
                 .setTitle("⏳ 타임아웃 해제 완료")
-                .setDescription(`${targetMember.toString()}님의 서버 이용 제한(타임아웃)을 해제해드렸어요!\n\n• **사유**: ${reason}\n• **집행 관리자**: ${message.author.toString()}`)
+                .setDescription(`${targetMember.toString()}님의 서버 이용 제한(타임아웃)을 해제해드렸어요!`)
+                .addFields(
+                  { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
+                  { name: '사유', value: reason, inline: true },
+                  { name: '집행 관리자', value: message.author.toString(), inline: true }
+                )
                 .setColor(MAIN_COLOR)
                 .setTimestamp();
 
@@ -1058,25 +1226,7 @@ module.exports = {
                 return message.reply("❌ **해당 유저는 저보다 권한이 높거나 동등하여 조치할 수 없어요.**").catch(console.error);
               }
 
-              let reason = "사유 미지정";
-              const queryWithoutMention = query.replace(/<@!?\d+>/g, '').trim();
-              const queryWithoutTime = queryWithoutMention.replace(/\d+\s*(일|시간|분|초)/g, '').trim();
-              let cleanQuery = queryWithoutTime
-                .replace(/타임아웃|뮤트|음소거/g, '')
-                .replace(/해줘|해|줘|설정|적용/g, '')
-                .trim();
-
-              const reasonMatch = 
-                cleanQuery.match(/(.+?)\s*사유로/) || 
-                cleanQuery.match(/(.+?)\s*사유/) || 
-                cleanQuery.match(/(.+?)\s*(?:으로|로)/) ||
-                cleanQuery.match(/(.+?)\s*때문에/);
-
-              if (reasonMatch) {
-                reason = reasonMatch[1].trim();
-              } else if (cleanQuery.length > 0) {
-                reason = cleanQuery;
-              }
+              const reason = extractNaturalReason(query, 'warn');
 
               message.client.timeoutCache = message.client.timeoutCache || new Map();
               message.client.timeoutCache.set(`${message.guild.id}-${targetMember.id}`, {
@@ -1084,8 +1234,18 @@ module.exports = {
                 executor: `${message.author.toString()} (${message.author.tag})`
               });
 
+              let nextId = null;
               try {
                 await targetMember.timeout(durationMs, reason);
+                // Save timeout record to DB
+                nextId = await getNextWarnId(db, message.guild.id).catch(() => null);
+                const durationMinutes = Math.round(durationMs / 60 / 1000);
+                if (nextId) {
+                  db.run(
+                    "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [message.guild.id.toString(), targetMember.id.toString(), message.author.id.toString(), reason, new Date().toISOString(), nextId, 'timeout', durationMinutes]
+                  );
+                }
               } catch (err) {
                 if (message.client.timeoutCache) {
                   message.client.timeoutCache.delete(`${message.guild.id}-${targetMember.id}`);
@@ -1096,7 +1256,12 @@ module.exports = {
 
               const embed = new EmbedBuilder()
                 .setTitle("⏳ 타임아웃 처리 완료")
-                .setDescription(`${targetMember.toString()}님이 **${timeStr}** 동안 서버 이용 제한(타임아웃) 제재를 받았어요!\n\n• **사유**: ${reason}\n• **집행 관리자**: ${message.author.toString()}`)
+                .setDescription(`${targetMember.toString()}님이 **${timeStr}** 동안 서버 이용 제한(타임아웃) 제재를 받았어요!`)
+                .addFields(
+                  { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
+                  { name: '사유', value: reason, inline: true },
+                  { name: '집행 관리자', value: message.author.toString(), inline: true }
+                )
                 .setColor(MAIN_COLOR)
                 .setTimestamp();
 
@@ -1109,24 +1274,7 @@ module.exports = {
                 return message.reply("❌ **이 명령은 시아 관리자 권한을 가진 분만 내릴 수 있어요.**").catch(console.error);
               }
 
-              let reason = "사유 미지정";
-              const queryWithoutMention = query.replace(/<@!?\d+>/g, '').trim();
-              let cleanQuery = queryWithoutMention
-                .replace(/차단|밴|영구/g, '')
-                .replace(/해줘|해|줘|설정|적용/g, '')
-                .trim();
-
-              const reasonMatch = 
-                cleanQuery.match(/(.+?)\s*사유로/) || 
-                cleanQuery.match(/(.+?)\s*사유/) || 
-                cleanQuery.match(/(.+?)\s*(?:으로|로)/) ||
-                cleanQuery.match(/(.+?)\s*때문에/);
-
-              if (reasonMatch) {
-                reason = reasonMatch[1].trim();
-              } else if (cleanQuery.length > 0) {
-                reason = cleanQuery;
-              }
+              const reason = extractNaturalReason(query, 'warn');
 
               if (targetMember && !targetMember.bannable) {
                 return message.reply("❌ **해당 유저는 저보다 권한이 높거나 동등하여 조치할 수 없어요.**").catch(console.error);
@@ -1138,8 +1286,17 @@ module.exports = {
                 executor: `${message.author.toString()} (${message.author.tag})`
               });
 
+              let nextId = null;
               try {
                 await message.guild.members.ban(targetUserId, { reason: reason });
+                // Save ban record to DB
+                nextId = await getNextWarnId(db, message.guild.id).catch(() => null);
+                if (nextId) {
+                  db.run(
+                    "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [message.guild.id.toString(), targetUserId.toString(), message.author.id.toString(), reason, new Date().toISOString(), nextId, 'ban']
+                  );
+                }
               } catch (err) {
                 if (message.client.banCache) {
                   message.client.banCache.delete(`${message.guild.id}-${targetUserId}`);
@@ -1150,7 +1307,12 @@ module.exports = {
 
               const embed = new EmbedBuilder()
                 .setTitle("🛡️ 멤버 영구 차단")
-                .setDescription(`${targetUser.toString()}님을 서버에서 영구 차단해드렸어요!\n\n• **사유**: ${reason}\n• **집행 관리자**: ${message.author.toString()}`)
+                .setDescription(`${targetUser.toString()}님을 서버에서 영구 차단해드렸어요!`)
+                .addFields(
+                  { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
+                  { name: '사유', value: reason, inline: true },
+                  { name: '집행 관리자', value: message.author.toString(), inline: true }
+                )
                 .setColor(0xff0000)
                 .setTimestamp();
 
@@ -1167,30 +1329,35 @@ module.exports = {
                 return message.reply("❌ **서버에 존재하지 않는 멤버는 추방(강퇴)할 수 없어요.**").catch(console.error);
               }
 
-              let reason = "사유 미지정";
-              const queryWithoutMention = query.replace(/<@!?\d+>/g, '').trim();
-
-              const reasonMatch = 
-                queryWithoutMention.match(/(.+?)\s*사유로\s*(?:강퇴|추방|킥)/) ||
-                queryWithoutMention.match(/tkdb\s+(.+?)\s*(?:으로|로)\s*(?:강퇴|추방|킥)/) ||
-                queryWithoutMention.match(/(.+?)\s*(?:으로|로)\s*(?:강퇴|추방|킥)/);
-
-              if (reasonMatch) {
-                reason = reasonMatch[1].trim();
-              }
+              const reason = extractNaturalReason(query, 'warn');
 
               if (!targetMember.kickable) {
                 return message.reply("❌ **해당 유저는 저보다 권한이 높거나 동등하여 조치할 수 없어요.**").catch(console.error);
               }
 
+              let nextId = null;
               await targetMember.kick(reason).catch(err => {
                 console.error(err);
                 return message.reply("❌ **추방(강퇴) 처리하는 중에 오류가 발생해버렸어요!**");
               });
 
+              // Save kick record to DB
+              nextId = await getNextWarnId(db, message.guild.id).catch(() => null);
+              if (nextId) {
+                db.run(
+                  "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  [message.guild.id.toString(), targetMember.id.toString(), message.author.id.toString(), reason, new Date().toISOString(), nextId, 'kick']
+                );
+              }
+
               const embed = new EmbedBuilder()
                 .setTitle("🚪 멤버 추방(강퇴) 완료")
-                .setDescription(`${targetMember.toString()}님을 서버에서 성공적으로 추방(강퇴)해드렸어요!\n\n• **사유**: ${reason}\n• **집행 관리자**: ${message.author.toString()}`)
+                .setDescription(`${targetMember.toString()}님을 서버에서 성공적으로 추방(강퇴)해드렸어요!`)
+                .addFields(
+                  { name: '제재 ID', value: `\`#${nextId || '발급 실패'}\``, inline: true },
+                  { name: '사유', value: reason, inline: true },
+                  { name: '집행 관리자', value: message.author.toString(), inline: true }
+                )
                 .setColor(MAIN_COLOR)
                 .setTimestamp();
 
@@ -1232,7 +1399,7 @@ module.exports = {
                         const userTag = targetUser.tag || targetUser.username;
                         const embed = new EmbedBuilder()
                           .setTitle('✨ 경고 초기화 완료')
-                          .setDescription(`<@${targetUserId}> 님의 모든 누적 경고를 깨끗하게 초기화해드렸어요!`)
+                          .setDescription(`<@${targetUserId}> 님의 모든 누적 경고를 전체 삭제해드렸어요!`)
                           .addFields(
                             { name: '대상 유저', value: `${userTag} (${targetUserId})`, inline: true },
                             { name: '초기화 사유', value: reason || '사유 미지정', inline: false }
@@ -1435,113 +1602,211 @@ module.exports = {
               }
 
               const reason = extractNaturalReason(query, 'warn');
+              const queryCleaned = query.replace(/<@!?\d+>/g, '').trim();
+              
+              let amount = 1;
+              const amountMatch = queryCleaned.match(/(\d+)\s*(?:회|번|개|id|번째)/) || queryCleaned.match(/(?:경고)\s*(\d+)/);
+              if (amountMatch) {
+                amount = parseInt(amountMatch[1]);
+              } else {
+                // Check if any numbers exist in prompt that might represent count
+                const numberMatch = queryCleaned.match(/\b([1-9])\b/);
+                if (numberMatch) {
+                  amount = parseInt(numberMatch[1]);
+                }
+              }
 
-              db.run(
-                "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id) VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(guild_warn_id), 0) + 1 FROM warnings WHERE guild_id = ?))",
-                [message.guild.id, targetUserId, message.author.id, reason, new Date().toISOString(), message.guild.id],
-                function(err) {
-                  if (err) {
-                    return message.reply("❌ **경고를 저장하는 중에 오류가 발생해버렸어요!**");
-                  }
+              const warnIds = [];
+              const guildId = message.guild.id;
+              const timestamp = new Date().toISOString();
 
-                  const lastInsertedId = this.lastID;
-
-                  db.get("SELECT guild_warn_id FROM warnings WHERE id = ?", [lastInsertedId], (err, warnRow) => {
-                    const guildWarnId = (warnRow && warnRow.guild_warn_id) ? warnRow.guild_warn_id : lastInsertedId;
-
-                    db.get("SELECT COUNT(*) as count FROM warnings WHERE guild_id = ? AND user_id = ?", [message.guild.id, targetUserId], async (err, row) => {
-                      const count = row ? row.count : 1;
-
-                      const embed = new EmbedBuilder()
-                        .setTitle('⚠️ 유저 경고 부여')
-                        .setDescription(`${targetUser} 님에게 새로운 경고를 드렸어요!`)
-                        .addFields(
-                          { name: '경고 ID', value: `\`#${guildWarnId}\``, inline: true },
-                          { name: '대상 유저', value: `${targetUser.tag || targetUser.username} (${targetUserId})`, inline: true },
-                          { name: '누적 경고 횟수', value: `**${count}회**`, inline: true },
-                          { name: '처리 관리자', value: `${message.author.tag}`, inline: true },
-                          { name: '경고 사유', value: reason, inline: false }
-                        )
-                        .setColor(MAIN_COLOR)
-                        .setTimestamp();
-
-                      message.reply({ embeds: [embed] });
-
-                      // Send Warning Log to log_sanction channel
-                      try {
-                        const loggingCog = require('./logging_cog');
-                        loggingCog.logWarning(message.client, message.guild.id, {
-                          action: 'add',
-                          targetUser,
-                          moderator: message.author,
-                          count,
-                          warnId: guildWarnId,
-                          reason
-                        });
-                      } catch (logErr) {
-                        console.error("Failed to send warn log:", logErr);
+              const runInserts = async () => {
+                for (let i = 0; i < amount; i++) {
+                  const nextId = await getNextWarnId(db, guildId);
+                  warnIds.push(nextId);
+                  await new Promise((resolveInsert, rejectInsert) => {
+                    db.run(
+                      "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp, guild_warn_id) VALUES (?, ?, ?, ?, ?, ?)",
+                      [guildId, targetUserId, message.author.id, reason, timestamp, nextId],
+                      function(err) {
+                        if (err) return rejectInsert(err);
+                        resolveInsert();
                       }
-
-                      // Auto sanction trigger
-                      db.get(
-                        "SELECT action_type, duration_value FROM server_warning_sanctions WHERE guild_id = ? AND warning_count = ?",
-                        [message.guild.id.toString(), count],
-                        async (err, sanctionRow) => {
-                          if (sanctionRow && targetMember) {
-                            const actionType = sanctionRow.action_type;
-                            const durationValue = sanctionRow.duration_value;
-
-                            if (actionType === 'timeout' && targetMember.moderatable) {
-                              const ms = durationValue * 60 * 1000;
-                              await targetMember.timeout(ms, `누적 경고 ${count}회 도달 자동 제재`);
-                              let durStr = `${durationValue}분`;
-                              const autoEmbed = new EmbedBuilder()
-                                .setTitle('🛡️ 누적 경고 자동 제재 (타임아웃)')
-                                .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **${durStr} 타임아웃** 제재를 받았어요!`)
-                                .setColor(0xff0000)
-                                .setTimestamp();
-                              message.channel.send({ embeds: [autoEmbed] });
-                            } else if (actionType === 'kick' && targetMember.kickable) {
-                              await targetMember.kick(`누적 경고 ${count}회 도달 자동 제재`);
-                              const autoEmbed = new EmbedBuilder()
-                                .setTitle('🛡️ 누적 경고 자동 제재 (추방)')
-                                .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **서버에서 추방**해드렸어요!`)
-                                .setColor(0xff0000)
-                                .setTimestamp();
-                              message.channel.send({ embeds: [autoEmbed] });
-                            } else if (actionType === 'ban' && (!targetMember || targetMember.bannable)) {
-                              const autoReason = `누적 경고 ${count}회 도달 자동 제재`;
-                              message.client.banCache = message.client.banCache || new Map();
-                              message.client.banCache.set(`${message.guild.id}-${targetUserId}`, {
-                                reason: autoReason,
-                                executor: `${message.client.user.toString()} (시스템 자동 제재)`
-                              });
-
-                              try {
-                                await message.guild.members.ban(targetUserId, { reason: autoReason });
-                              } catch (e) {
-                                if (message.client.banCache) {
-                                  message.client.banCache.delete(`${message.guild.id}-${targetUserId}`);
-                                }
-                                throw e;
-                              }
-
-                              const autoEmbed = new EmbedBuilder()
-                                .setTitle('🛡️ 누적 경고 자동 제재 (차단)')
-                                .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **서버에서 차단**해드렸어요!`)
-                                .setColor(0xff0000)
-                                .setTimestamp();
-                              message.channel.send({ embeds: [autoEmbed] });
-                            }
-                          }
-                        }
-                      );
-                    });
+                    );
                   });
                 }
-              );
+              };
+
+              runInserts()
+                .then(() => {
+                  db.get("SELECT COUNT(*) as count FROM warnings WHERE guild_id = ? AND user_id = ?", [guildId, targetUserId], async (err, row) => {
+                    const count = row ? row.count : amount;
+                    const warnIdText = warnIds.map(id => `\`#${id}\``).join(', ');
+
+                    const embed = new EmbedBuilder()
+                      .setTitle('⚠️ 유저 경고 부여')
+                      .setDescription(`${targetUser} 님에게 새로운 경고를 드렸어요!`)
+                      .addFields(
+                        { name: '경고 ID', value: warnIdText, inline: true },
+                        { name: '대상 유저', value: `${targetUser.tag || targetUser.username} (${targetUserId})`, inline: true },
+                        { name: '누적 경고 횟수', value: `**${count}회**`, inline: true },
+                        { name: '처리 관리자', value: `${message.author.tag}`, inline: true },
+                        { name: '경고 사유', value: reason, inline: false }
+                      )
+                      .setColor(MAIN_COLOR)
+                      .setTimestamp();
+
+                    message.reply({ embeds: [embed] });
+
+                    // Send Warning Log to log_sanction channel
+                    try {
+                      const loggingCog = require('./logging_cog');
+                      loggingCog.logWarning(message.client, guildId, {
+                        action: 'add',
+                        targetUser,
+                        moderator: message.author,
+                        count,
+                        warnId: warnIds.join(', '),
+                        reason
+                      });
+                    } catch (logErr) {
+                      console.error("Failed to send warn log:", logErr);
+                    }
+
+                    // Auto sanction trigger
+                    db.get(
+                      "SELECT action_type, duration_value FROM server_warning_sanctions WHERE guild_id = ? AND warning_count = ?",
+                      [guildId.toString(), count],
+                      async (err, sanctionRow) => {
+                        if (sanctionRow && targetMember) {
+                          const actionType = sanctionRow.action_type;
+                          const durationValue = sanctionRow.duration_value;
+
+                          if (actionType === 'timeout' && targetMember.moderatable) {
+                            const ms = durationValue * 60 * 1000;
+                            await targetMember.timeout(ms, `누적 경고 ${count}회 도달 자동 제재`);
+                            let durStr = `${durationValue}분`;
+                            const autoEmbed = new EmbedBuilder()
+                              .setTitle('🛡️ 누적 경고 자동 제재 (타임아웃)')
+                              .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **${durStr} 타임아웃** 제재를 받았어요!`)
+                              .setColor(0xff0000)
+                              .setTimestamp();
+                            message.channel.send({ embeds: [autoEmbed] });
+                          } else if (actionType === 'kick' && targetMember.kickable) {
+                            await targetMember.kick(`누적 경고 ${count}회 도달 자동 제재`);
+                            const autoEmbed = new EmbedBuilder()
+                              .setTitle('🛡️ 누적 경고 자동 제재 (추방)')
+                              .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **서버에서 추방**해드렸어요!`)
+                              .setColor(0xff0000)
+                              .setTimestamp();
+                            message.channel.send({ embeds: [autoEmbed] });
+                          } else if (actionType === 'ban' && (!targetMember || targetMember.bannable)) {
+                            const autoReason = `누적 경고 ${count}회 도달 자동 제재`;
+                            message.client.banCache = message.client.banCache || new Map();
+                            message.client.banCache.set(`${message.guild.id}-${targetUserId}`, {
+                              reason: autoReason,
+                              executor: `${message.client.user.toString()} (시스템 자동 제재)`
+                            });
+
+                            try {
+                              await message.guild.members.ban(targetUserId, { reason: autoReason });
+                            } catch (e) {
+                              if (message.client.banCache) {
+                                message.client.banCache.delete(`${message.guild.id}-${targetUserId}`);
+                              }
+                              throw e;
+                            }
+
+                            const autoEmbed = new EmbedBuilder()
+                              .setTitle('🛡️ 누적 경고 자동 제재 (차단)')
+                              .setDescription(`${targetUser} 님이 누적 경고 **${count}회**에 도달해서 **서버에서 차단**해드렸어요!`)
+                              .setColor(0xff0000)
+                              .setTimestamp();
+                            message.channel.send({ embeds: [autoEmbed] });
+                          }
+                        }
+                      }
+                    );
+                  });
+                })
+                .catch(err => {
+                  console.error("Error inserting warnings:", err);
+                  return message.reply("❌ **경고를 저장하는 중에 데이터베이스 오류가 발생해버렸어요!**");
+                });
               return;
             }
+          }
+        }
+
+        // [AI라도 관리 관련 시아야~는 AI 쓰지 말고 코드를 쓰게 함]
+        // 1. 유저의 AI 대화 활성화 여부 동적/비동기 동기화 획득
+        const userMode = await new Promise((resolve) => {
+          db.get("SELECT has_access, mode FROM ai_access WHERE user_id = ?", [message.author.id], (err, row) => {
+            if (err || !row || row.has_access !== 1) {
+              resolve('normal');
+            } else {
+              resolve(row.mode);
+            }
+          });
+        });
+
+        // 2. 만약 관리 명령어가 아니고 일반 대화이면서 AI 모드가 활성화되어 있다면:
+        // 하위 하드코딩 일상 답변을 전부 건너뛰고 오직 똑똑한 Gemini AI로만 즉시 한 번 응답하고 끝냄(return)!
+        if (!isModerationQuery && userMode === 'ai') {
+          if (!process.env.GEMINI_API_KEY) {
+            return message.reply("❌ 현재 AI 채팅 서비스가 활성화되어 있지 않아요 ! 관리자에게 문의해 주세요.").catch(console.error);
+          }
+
+          try {
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    parts: [
+                      {
+                        text: `너는 디스코드 서버의 안전과 평화를 지키는 다정하고 사랑스러운 토끼 수호비서 '시아(Xia)'입니다.
+절대 네가 Google(구글)에 의해 개발된 AI 모델이라거나, 'Gemini(제미나이)'라고 발설하거나 언급하지 마세요. 너의 정체성은 오직 개발자 '서유나(yuna._.seo)' 님이 개발한 디스코드 서버의 귀여운 수호비서 '시아(Xia)'입니다.
+말투는 극도로 다정하고 사랑스러우며 반드시 모든 대답은 존댓말이며, 어미에 '~에요.', '~할게요!', '~해볼까요?', '헤헤', '웅웅' 등을 자연스럽게 섞어서 귀엽게 대답해야 합니다.
+유저 ${authorName}님의 메시지에 다정하게 답해주세요.
+유저 메시지: ${query}`
+                      }
+                    ]
+                  }
+                ]
+              })
+            });
+
+            if (!response.ok) {
+              const errBody = await response.json().catch(() => ({}));
+              const isQuota = response.status === 429 || 
+                              (errBody.error && (
+                                errBody.error.status === "RESOURCE_EXHAUSTED" ||
+                                errBody.error.message.includes("quota") ||
+                                errBody.error.message.includes("limit")
+                              ));
+              if (isQuota) {
+                return message.reply("😭 **죄송해요 🥺 시아의 하루 AI 한도가 지금 모두 가득 차버렸어요!**\n내일이나 잠시 후에 다시 시아를 찾아주세요!").catch(console.error);
+              }
+              throw new Error(`API response status: ${response.status} - ${JSON.stringify(errBody)}`);
+            }
+
+            const data = await response.json();
+            const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (replyText) {
+              const formattedReply = `${replyText.trim()}\n\n-# AI의 답변은 부정확할 수 있습니다.`;
+              return message.reply(formattedReply).catch(console.error);
+            } else {
+              throw new Error("Empty candidate parts from Gemini API");
+            }
+          } catch (apiErr) {
+            console.error("Gemini API error in messageCreate:", apiErr);
+            const isQuota = apiErr.message.includes("429") || apiErr.message.toLowerCase().includes("quota") || apiErr.message.toLowerCase().includes("exhausted");
+            if (isQuota) {
+              return message.reply("😭 **죄송해요 🥺 시아의 하루 AI 말상대 한도가 지금 모두 가득 차버렸어요!**\n내일이나 잠시 후에 다시 시아를 찾아주세요!").catch(console.error);
+            }
+            return message.reply("😭 **으앙... 시아의 AI 뇌 회로에 잠시 과부하가 걸려버렸어요!**\n잠시 후 다시 말을 걸어주세요!").catch(console.error);
           }
         }
 
@@ -1613,7 +1878,7 @@ module.exports = {
         if (query.includes('나이') || query.includes('몇 살') || query.includes('몇살')) {
           const ages = [
             `시아의 나이는 비밀이에요! 하지만 언제나 ${authorName}님의 가장 젊고 활기찬 단짝 친구라는 건 변하지 않는걸요? 🥰💖`,
-            `응애! 시아는 매 순간 새롭게 업데이트되며 다시 태어나는 영원한 아기 수호요정이에요! 응애~ 🍼🐰`,
+            `응애! 시아는 매 순간 새롭게 업데이트되며 다시 태어나는 영원한 아기 수호비서예요! 응애~ 🍼🐰`,
             `나이는 숫자에 불과하답니다! 시아는 ${authorName}님과 영원히 동갑내기 친구로 지내고 싶어요! 헤헤 🥰`
           ];
           const choice = ages[Math.floor(Math.random() * ages.length)];
@@ -1639,7 +1904,7 @@ module.exports = {
         }
         if (query.includes('바보') || query.includes('못생겼') || query.includes('뚱뚱')) {
           const sads = [
-            `으앙... ${authorName}님 너무해요! 시아 바보 아니라구욧! 엄청 얌전하고 똑똑한 요정이에요! 😤💦`,
+            `으앙... ${authorName}님 너무해요! 시아 바보 아니라구욧! 엄청 얌전하고 똑똑한 비서예요! 😤💦`,
             `히잉... 속상해요... 시아 눈물 나려고 해요 🥺 그래도 ${authorName}님이 웃을 수 있다면 바보가 되어도 쪼끔은 괜찮을지도... 흐앙! 💧`,
             `흥! 시아 삐졌어요! 얼른 시아가 좋아하는 맛있는 메뉴 추천이나 로또 번호 뽑기로 달래주세요! 😤💖`
           ];
@@ -1685,7 +1950,7 @@ module.exports = {
           return message.reply(`🎶 ~ 라라라~ ${authorName}님을 위해 특별히 시아의 하트 세레나데를 준비했어요! 💖`).catch(console.error);
         }
 
-        // Generic fallback reactions
+        // Generic fallback reactions (AI Mode Router / 16-Variant Normal Mode)
         const responses = [
           `네! "${query}"에 대해 준비해봤어요! 더 자세히 얘기해볼까요? 😮`,
           `헤헤, ${authorName}님과 대화하는 건 언제나 즐거워요! 🥰`,
@@ -1693,8 +1958,18 @@ module.exports = {
           `시아는 언제나 ${authorName}님의 행복을 응원할게요! 🍀`,
           `음~ 그건 어떤 의미일까요? 시아한테 더 얘기해볼까요? 🤔`,
           `와아! ${authorName}님이 해주신 말씀, 너무 재밌고 흥미진진한 것 같아요! 🌟`,
-          `시아는 ${authorName}님이 하시는 말씀이라면 하나도 놓치고 싶지 않아요! 다 들어줄게요! 👂✨`
+          `시아는 ${authorName}님이 하시는 말씀이라면 하나도 놓치고 싶지 않아요! 다 들어줄게요! 👂✨`,
+          `앗! 그 이야기 진짜 흥미로운걸요? 시아한테 조금만 더 들려주세요! 🎵`,
+          `오호라! 그런 신기한 생각은 어떻게 하신 거에요? ${authorName}님 최고! 👍💖`,
+          `헤헤, 시아가 옆에서 ${authorName}님 이야기 경청하고 있어요! 계속 말씀해주세요! 💬`,
+          `웅웅, 무슨 뜻인지 알 것 같아요! 시아와 함께라면 매일이 축제에요! 🌟`,
+          `꺄아! ${authorName}님의 말씀 한마디에 시아는 온종일 춤을 출 수 있어요! 💃✨`,
+          `지친 하루 끝에 ${authorName}님과 도란도란 나누는 이야기가 시아에겐 가장 큰 힐링이에요! ☕🌸`,
+          `후후, ${authorName}님이 제 이름을 불러주실 때마다 심장이 콩닥콩닥거려요! 🥰`,
+          `짜잔! ${authorName}님이 원하신다면 시아는 언제나 100% 대기 중이랍니다! 🐰🚀`,
+          `음~ 오늘도 정말 유익하고 행복한 대화네요! 시아와 친구해 주셔서 고마워요! 🍀`
         ];
+
         const choice = responses[Math.floor(Math.random() * responses.length)];
         return message.reply(choice).catch(console.error);
         } catch (error) {

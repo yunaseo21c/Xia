@@ -111,6 +111,35 @@ client.once('ready', async () => {
   // Deploy slash commands automatically on startup
   await deploySlashCommands();
 
+  // Send restart notification via Webhook if configured
+  const { RESTART_WEBHOOK_URL, BOT_NAME, SUCCESS_COLOR } = require('./core/config');
+  if (RESTART_WEBHOOK_URL) {
+    try {
+      const { WebhookClient, EmbedBuilder } = require('discord.js');
+      const webhookClient = new WebhookClient({ url: RESTART_WEBHOOK_URL });
+      
+      const restartEmbed = new EmbedBuilder()
+        .setTitle(`🔄 시아 봇 재시작 완료`)
+        .setDescription(`**${BOT_NAME}** 봇이 성공적으로 재시작되었으며, 모든 시스템이 활성화되었습니다.`)
+        .setColor(SUCCESS_COLOR)
+        .addFields(
+          { name: '상태', value: '🟢 정상 작동 중 (Online)', inline: true },
+          { name: '재시작 시각', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+          { name: '서버 수', value: `\`${client.guilds.cache.size}개\``, inline: true }
+        )
+        .setTimestamp();
+
+      await webhookClient.send({
+        username: `${BOT_NAME} 시스템 알림`,
+        avatarURL: client.user.displayAvatarURL(),
+        embeds: [restartEmbed]
+      });
+      console.log('[System] Restart notification sent successfully via Webhook.');
+    } catch (webhookErr) {
+      console.error('[System Error] Failed to send restart notification via Webhook:', webhookErr);
+    }
+  }
+
   /* 
   // KoreanBots Integration (per https://js-sdk-docs.pages.dev/#사용법)
   try {
@@ -223,11 +252,15 @@ client.on('interactionCreate', async interaction => {
       .setColor(0xEF4444)
       .setTimestamp();
 
-    const errorMsg = { embeds: [errorEmbed], flags: [MessageFlags.Ephemeral] };
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(errorMsg).catch(() => {});
-    } else {
-      await interaction.reply(errorMsg).catch(() => {});
+    try {
+      const errorMsg = { embeds: [errorEmbed], flags: [MessageFlags.Ephemeral] };
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(errorMsg).catch(() => {});
+      } else {
+        await interaction.reply(errorMsg).catch(() => {});
+      }
+    } catch (e) {
+      console.error('Failed to send error reply to user:', e);
     }
 
     // Report error to guild moderation logs, masking sensitive info
@@ -235,6 +268,16 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
+
+// 글로벌 에러 방어 핸들러 (Unhandled Rejection & Uncaught Exception)
+// DiscordAPIError[10062] Unknown Interaction 등 예외가 발생하더라도 프로세스가 강제 크래시되는 현상을 원천 방지합니다.
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ [글로벌 예외 감지] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err, origin) => {
+  console.error('⚠️ [글로벌 예외 감지] Uncaught Exception:', err, 'origin:', origin);
+});
 
 // Start the bot
 (() => {

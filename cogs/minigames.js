@@ -73,7 +73,7 @@ async function generateFishCard(username, fish) {
         <text x="260" y="32" font-family="'Pretendard', 'Inter', sans-serif" font-size="20" font-weight="bold" fill="#facc15" text-anchor="end">${fish.value.toLocaleString()} 시아코인</text>
       </g>
 
-      <text x="270" y="280" font-family="'Pretendard', 'Inter', sans-serif" font-size="13" fill="#6b7280">SIA AUTOMATED ECONOMY SYSTEM v2.1</text>
+      <text x="270" y="280" font-family="'Pretendard', 'Inter', sans-serif" font-size="13" fill="#6b7280">XIA AUTOMATED ECONOMY SYSTEM v2.1</text>
       <text x="270" y="300" font-family="'Pretendard', 'Inter', sans-serif" font-size="11" fill="#4b5563">물고기를 상점에 일괄 판매하려면 /판매 명령어를 입력해 주세요.</text>
     </svg>
   `;
@@ -104,6 +104,12 @@ db.serialize(() => {
     item_name TEXT,
     item_count INTEGER DEFAULT 0,
     PRIMARY KEY (user_id, item_name)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS ai_access (
+    user_id TEXT PRIMARY KEY,
+    has_access INTEGER DEFAULT 0,
+    mode TEXT DEFAULT 'normal'
   )`);
 });
 
@@ -615,6 +621,8 @@ module.exports = {
               .setColor(ERROR_COLOR);
           }
 
+          embed.setFooter({ text: '🎰 Mega(2%), Jackpot(5%), Double(18%), Small(25%), Loss(50%) • 도박은 중독될 수 있습니다. ☎️ 상담: 1336' });
+
           await interaction.editReply({ embeds: [embed] }).catch(() => null);
         }, 1200);
       }
@@ -622,11 +630,73 @@ module.exports = {
     {
       data: new SlashCommandBuilder()
         .setName('판매')
-        .setDescription('인벤토리에 있는 모든 물고기와 농작물을 상점에 한꺼번에 일괄 판매합니다.'),
+        .setDescription('소지하고 있는 농작물 또는 물고기를 상점에 판매합니다.')
+        .addStringOption(option =>
+          option.setName('이름')
+            .setDescription('판매할 농작물 또는 어종의 이름 (미입력 시 소지품 일괄 판매)')
+            .setRequired(false)
+        )
+        .addIntegerOption(option =>
+          option.setName('수량')
+            .setDescription('단일 판매 시 처분할 수량 (기본값: 1개)')
+            .setRequired(false)
+            .setMinValue(1)
+        ),
       async execute(interaction) {
-        const { user } = interaction;
+        const { user, options } = interaction;
         await ensureUser(user.id);
 
+        const targetName = options.getString('이름');
+        const targetCount = options.getInteger('수량') || 1;
+
+        if (targetName) {
+          // 단일 품목 판매 로직
+          const fishObj = FISHES.find(f => f.name === targetName);
+          const cropObj = CROPS.find(c => c.name === targetName);
+          const itemObj = fishObj || cropObj;
+
+          if (!itemObj) {
+            return interaction.reply({ content: `❌ **'${targetName}'**은(는) 존재하지 않는 농작물이거나 어종이에요. 정확한 이름을 입력해볼까요?`, ephemeral: true });
+          }
+
+          db.get(
+            "SELECT item_count FROM inventory WHERE user_id = ? AND item_name = ?",
+            [user.id, itemObj.name],
+            async (err, row) => {
+              const currentCount = row ? row.item_count : 0;
+              if (currentCount <= 0 || currentCount < targetCount) {
+                return interaction.reply({ content: `❌ **${itemObj.name}**을(를) 충분히 가지고 있지 않아요! (보유 수량: **${currentCount}개** / 판매 요청: **${targetCount}개**)\n농사나 낚시를 더 하고 와볼까요?`, ephemeral: true });
+              }
+
+              const earnings = itemObj.value * targetCount;
+              await updateUserMoney(user.id, earnings);
+
+              const nextCount = currentCount - targetCount;
+              const updateQuery = nextCount > 0 
+                ? "UPDATE inventory SET item_count = ? WHERE user_id = ? AND item_name = ?"
+                : "DELETE FROM inventory WHERE user_id = ? AND item_name = ?";
+              const params = nextCount > 0 ? [nextCount, user.id, itemObj.name] : [user.id, itemObj.name];
+
+              db.run(updateQuery, params, () => {
+                const embed = new EmbedBuilder()
+                  .setTitle('💰 상점 단일 판매 완료')
+                  .setDescription(`${user} 님이 가진 소중한 전리품을 판매하여 골드를 획득했습니다!`)
+                  .addFields(
+                    { name: '판매 물품', value: `${itemObj.emoji} **${itemObj.name}** x${targetCount}개`, inline: true },
+                    { name: '획득 금액', value: `🎉 **+${earnings.toLocaleString()}** 시아코인`, inline: true },
+                    { name: '남은 보유량', value: `**${nextCount}개**`, inline: true }
+                  )
+                  .setColor(SUCCESS_COLOR)
+                  .setTimestamp();
+
+                return interaction.reply({ embeds: [embed] });
+              });
+            }
+          );
+          return;
+        }
+
+        // 일괄 판매 로직 (기존 코드와 호환)
         db.all("SELECT item_name, item_count FROM inventory WHERE user_id = ?", [user.id], async (err, rows) => {
           if (err || !rows || rows.length === 0) {
             return interaction.reply({ content: '🎒 인벤토리가 완전히 비어 있습니다! 낚시나 농사를 먼저 하고 오세요.', ephemeral: true });
@@ -749,6 +819,200 @@ module.exports = {
           }
 
           return interaction.reply({ embeds: [embed] });
+        });
+      }
+    },
+    {
+      data: new SlashCommandBuilder()
+        .setName('도감')
+        .setDescription('낚시 가능한 어종 및 농작물에 대한 가격과 획득 확률표를 확인합니다.')
+        .addStringOption(option => 
+          option.setName('분류')
+            .setDescription('확인할 도감 종류를 선택하세요.')
+            .setRequired(true)
+            .addChoices(
+              { name: '🎣 낚시 도감 어종 목록', value: 'fish' },
+              { name: '🌱 농사 도감 작물 목록', value: 'crop' }
+            )
+        ),
+      async execute(interaction) {
+        const type = interaction.options.getString('분류');
+        const embed = new EmbedBuilder()
+          .setColor(MAIN_COLOR)
+          .setTimestamp();
+
+        if (type === 'fish') {
+          embed.setTitle('🎣 시아 글로벌 낚시 도감 (어종 일람)')
+            .setDescription('낚시 미니게임을 통해 수확 가능한 소중한 물고기 가격표와 획득 확률입니다.');
+
+          const details = FISHES.map(f => {
+            const star = f.chance <= 5 ? '⭐ 전설' : f.chance <= 10 ? '💫 영웅' : f.chance <= 15 ? '✨ 희귀' : '🐟 일반';
+            return `• ${f.emoji} **${f.name}**\n  ㄴ **등급**: \`${star}\` | **판매가**: \`${f.value.toLocaleString()} 시아코인\` | **획득 확률**: \`${f.chance}%\``;
+          }).join('\n\n');
+
+          embed.addFields({ name: '📊 낚시 도감 가격표', value: details });
+        } else {
+          embed.setTitle('🌱 시아 글로벌 농사 도감 (작물 일람)')
+            .setDescription('농사 미니게임을 통해 수확 가능한 맛있는 작물 가격표와 획득 확률입니다.');
+
+          const details = CROPS.map(c => {
+            const star = c.chance <= 2 ? '⭐ 전설' : c.chance <= 8 ? '💫 영웅' : c.chance <= 15 ? '✨ 희귀' : '🌱 일반';
+            return `• ${c.emoji} **${c.name}**\n  ㄴ **등급**: \`${star}\` | **판매가**: \`${c.value.toLocaleString()} 시아코인\` | **획득 확률**: \`${c.chance}%\``;
+          }).join('\n\n');
+
+          embed.addFields({ name: '📊 농사 도감 가격표', value: details });
+        }
+
+        return interaction.reply({ embeds: [embed] });
+      }
+    },
+    {
+      data: new SlashCommandBuilder()
+        .setName('인벤토리')
+        .setDescription('내가 소지한 가방 속 전리품 및 보유 중인 시아코인 정보를 확인합니다.'),
+      async execute(interaction) {
+        const { user } = interaction;
+        await ensureUser(user.id);
+
+        const balance = await getUserMoney(user.id);
+
+        db.all("SELECT item_name, item_count FROM inventory WHERE user_id = ?", [user.id], (err, rows) => {
+          const embed = new EmbedBuilder()
+            .setTitle(`🎒 ${user.username} 님의 개인 소지품 가방`)
+            .addFields({ name: '🪙 보유 잔고', value: `**${balance.toLocaleString()}** 시아코인`, inline: false })
+            .setColor(MAIN_COLOR)
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+
+          const inventoryItems = [];
+          if (rows && rows.length > 0) {
+            for (const row of rows) {
+              if (row.item_count <= 0) continue;
+              const fishObj = FISHES.find(f => f.name === row.item_name);
+              const cropObj = CROPS.find(c => c.name === row.item_name);
+              const itemObj = fishObj || cropObj;
+
+              if (itemObj) {
+                inventoryItems.push(`${itemObj.emoji} **${row.item_name}** x${row.item_count}개 (\`개당 ${itemObj.value}코인\`)`);
+              }
+            }
+          }
+
+          if (inventoryItems.length > 0) {
+            embed.addFields({ name: '🧳 보관 중인 작물/어종 목록', value: inventoryItems.join('\n'), inline: false });
+          } else {
+            embed.addFields({ name: '🧳 보관 중인 작물/어종 목록', value: '보관 가방이 텅 비어 있습니다! 🎣`/낚시`나 🌱`/농사`를 지어보세요.', inline: false });
+          }
+
+          return interaction.reply({ embeds: [embed] });
+        });
+      }
+    },
+    {
+      data: new SlashCommandBuilder()
+        .setName('송금')
+        .setDescription('내가 가진 시아코인을 다른 멤버에게 이체(송금)합니다.')
+        .addUserOption(option => 
+          option.setName('대상').setDescription('돈을 보낼 유저를 지정하세요.').setRequired(true)
+        )
+        .addIntegerOption(option => 
+          option.setName('금액').setDescription('이체할 시아코인 금액을 지정하세요.').setRequired(true).setMinValue(1)
+        ),
+      async execute(interaction) {
+        const { user, options } = interaction;
+        const targetUser = options.getUser('대상');
+        const amount = options.getInteger('금액');
+
+        if (targetUser.id === user.id) {
+          return interaction.reply({ content: '❌ **자신에게 시아코인을 송금할 수는 없어요.**', ephemeral: true });
+        }
+        if (targetUser.bot) {
+          return interaction.reply({ content: '❌ **봇에게 시아코인을 송금할 수는 없어요.**', ephemeral: true });
+        }
+
+        await ensureUser(user.id);
+        await ensureUser(targetUser.id);
+
+        const myMoney = await getUserMoney(user.id);
+
+        if (myMoney < amount) {
+          return interaction.reply({ content: `❌ **송금할 코인이 부족해요!** (보유 잔고: **${myMoney.toLocaleString()}** 시아코인 / 송금 요청액: **${amount.toLocaleString()}** 코인)`, ephemeral: true });
+        }
+
+        // Execute global coin transfer transaction in sqlite3 DB
+        db.serialize(() => {
+          db.run("BEGIN TRANSACTION");
+          db.run("UPDATE economy SET money = money - ? WHERE user_id = ?", [amount, user.id]);
+          db.run("UPDATE economy SET money = money + ? WHERE user_id = ?", [amount, targetUser.id]);
+          db.run("COMMIT", (err) => {
+            if (err) {
+              console.error("Remittance transaction failed:", err);
+              return interaction.reply({ content: '❌ 송금 처리 중 데이터베이스 에러가 발생해버렸어요! 잠시 후 다시 시도해볼까요?', ephemeral: true });
+            }
+
+            const embed = new EmbedBuilder()
+              .setTitle('💸 시아 글로벌 금융 송금 완료')
+              .setDescription(`${user.toString()} 님이 ${targetUser.toString()} 님에게 코인을 성공적으로 이체했습니다!`)
+              .addFields(
+                { name: '보낸 사람', value: `${user.username} (남은 잔고: **${(myMoney - amount).toLocaleString()}** 코인)`, inline: true },
+                { name: '받은 사람', value: `${targetUser.username}`, inline: true },
+                { name: '이체 금액', value: `💸 **${amount.toLocaleString()}** 시아코인`, inline: false }
+              )
+              .setColor(SUCCESS_COLOR)
+              .setTimestamp();
+
+            return interaction.reply({ embeds: [embed] });
+          });
+        });
+      }
+    },
+    {
+      data: new SlashCommandBuilder()
+        .setName('ai구매')
+        .setDescription('20,000 시아코인을 지불하여 똑똑한 시아 AI와 개인 대화를 나눌 권한을 영구 구매합니다.'),
+      async execute(interaction) {
+        const { user } = interaction;
+        await ensureUser(user.id);
+
+        const price = 20000;
+        const myMoney = await getUserMoney(user.id);
+
+        // Check if user already owns access
+        db.get("SELECT has_access FROM ai_access WHERE user_id = ?", [user.id], async (err, row) => {
+          if (row && row.has_access === 1) {
+            return interaction.reply({ content: '💡 **이미 시아 AI 개인 대화 접근 권한을 구매하여 보유 중이에요!**\n`/시아야 설정` 명령어로 바로 AI 모드를 활성화해볼까요?', ephemeral: true });
+          }
+
+          if (myMoney < price) {
+            return interaction.reply({ content: `❌ **시아코인이 부족해요!** (보유 잔고: **${myMoney.toLocaleString()}** 코인 / AI 권한 가격: **${price.toLocaleString()}** 코인)\n🎣 \`/낚시\`나 🌱 \`/농사\`를 가 열심히 코인을 벌어와 볼까요?`, ephemeral: true });
+          }
+
+          // Complete purchase transactions
+          await updateUserMoney(user.id, -price);
+          db.run(
+            "INSERT OR REPLACE INTO ai_access (user_id, has_access, mode) VALUES (?, 1, 'normal')",
+            [user.id],
+            (err) => {
+              if (err) {
+                console.error("AI access purchase DB error:", err);
+                return interaction.reply({ content: '❌ 구매 도중 오류가 발생해버렸어요! 잠시 후 다시 시도해볼까요?', ephemeral: true });
+              }
+
+              const embed = new EmbedBuilder()
+                .setTitle('✨ 👑 시아 AI 개인 대화 권한 구매 완료!')
+                .setDescription(
+                  `축하합니다! 시아와 지능적인 자유 대화를 나눌 수 있는 권한을 영구 획득하셨습니다! 🎉\n\n` +
+                  `**💡 AI 모드 활성화 방법**:\n` +
+                  `1. 언제든지 \`/시아야 설정\` 명령어를 입력하여 모드를 전환할 수 있습니다.\n` +
+                  `2. 이제 일반적인 말장난 대답 대신, 시아가 훨씬 똑똑한 비서처럼 대답해 줄 거예요!\n\n` +
+                  `*정산 금액: -${price.toLocaleString()} 시아코인 (남은 잔고: ${(myMoney - price).toLocaleString()} 코인)*`
+                )
+                .setColor(SUCCESS_COLOR)
+                .setTimestamp();
+
+              return interaction.reply({ embeds: [embed] });
+            }
+          );
         });
       }
     }

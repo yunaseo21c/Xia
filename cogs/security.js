@@ -25,6 +25,11 @@ db.serialize(() => {
     guild_id TEXT PRIMARY KEY,
     role_id TEXT
   )`);
+  db.run(`CREATE TABLE IF NOT EXISTS server_emergency_security (
+    guild_id TEXT PRIMARY KEY,
+    invite_block_until TEXT,
+    dm_block_until TEXT
+  )`);
 });
 
 // Helper function to check role permissions & hierarchy
@@ -386,6 +391,133 @@ module.exports = {
           return interaction.reply({ content: `설정 실패: ${e.message}`, ephemeral: true });
         }
       }
+    },
+    {
+      data: new SlashCommandBuilder()
+        .setName('긴급보안')
+        .setDescription('서버 내 초대장 무단 생성 및 봇 DM 송출을 정지하여 보안 사고를 긴급 예방합니다.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addSubcommand(subcommand =>
+          subcommand.setName('설정')
+            .setDescription('긴급보안을 적용하여 초대장 및 봇 DM을 일시적으로 차단합니다.')
+            .addIntegerOption(option =>
+              option.setName('초대정지시간')
+                .setDescription('초대 링크 생성을 정지할 시간 (단위: 분, 0은 무제한 정지안함)')
+                .setRequired(true)
+                .setMinValue(0)
+            )
+            .addIntegerOption(option =>
+              option.setName('dm정지시간')
+                .setDescription('봇이 서버 멤버에게 보내는 DM 알림을 차단할 시간 (단위: 분, 0은 차단안함)')
+                .setRequired(true)
+                .setMinValue(0)
+            )
+        )
+        .addSubcommand(subcommand =>
+          subcommand.setName('해제')
+            .setDescription('설정된 긴급보안을 모두 즉시 강제 해제합니다.')
+        )
+        .addSubcommand(subcommand =>
+          subcommand.setName('상태')
+            .setDescription('현재 활성화된 긴급보안 상태 및 남은 유효 시간을 체크합니다.')
+        ),
+      async execute(interaction) {
+        if (!(await checkAdminPermission(interaction.member))) {
+          return interaction.reply({ embeds: [PERMISSION_ERROR_EMBED()], ephemeral: true });
+        }
+
+        const subcommand = interaction.options.getSubcommand();
+        const guildId = interaction.guildId.toString();
+
+        if (subcommand === '설정') {
+          const inviteMinutes = interaction.options.getInteger('초대정지시간');
+          const dmMinutes = interaction.options.getInteger('dm정지시간');
+
+          const now = Date.now();
+          const inviteUntil = inviteMinutes > 0 ? new Date(now + inviteMinutes * 60 * 1000).toISOString() : null;
+          const dmUntil = dmMinutes > 0 ? new Date(now + dmMinutes * 60 * 1000).toISOString() : null;
+
+          db.run(
+            "INSERT OR REPLACE INTO server_emergency_security (guild_id, invite_block_until, dm_block_until) VALUES (?, ?, ?)",
+            [guildId, inviteUntil, dmUntil],
+            (err) => {
+              if (err) {
+                console.error(err);
+                return interaction.reply({ content: "❌ 긴급보안을 설정하는 중에 오류가 발생해버렸어요.", ephemeral: true });
+              }
+
+              const embed = new EmbedBuilder()
+                .setTitle("🚨 긴급 보안 태세 발령 완료")
+                .setDescription(`현재 서버의 보안 강화를 위해 비상 조치 프로토콜을 작동했어요!`)
+                .addFields(
+                  { name: "🛡️ 초대 링크 생성 정지", value: inviteMinutes > 0 ? `🟢 **${inviteMinutes}분 동안** 임시 생성 차단` : "⚪ 비활성 (정지 안 함)", inline: true },
+                  { name: "💬 봇 알림용 DM 정지", value: dmMinutes > 0 ? `🟢 **${dmMinutes}분 동안** 봇 DM 차단` : "⚪ 비활성 (정지 안 함)", inline: true }
+                )
+                .setColor(0xEF4444)
+                .setTimestamp();
+
+              return interaction.reply({ embeds: [embed] });
+            }
+          );
+        }
+
+        else if (subcommand === '해제') {
+          db.run("DELETE FROM server_emergency_security WHERE guild_id = ?", [guildId], (err) => {
+            if (err) {
+              console.error(err);
+              return interaction.reply({ content: "❌ 긴급보안을 해제하는 도중 오류가 발생해버렸어요.", ephemeral: true });
+            }
+            const embed = new EmbedBuilder()
+              .setTitle("✨ 긴급 보안 태세 해제 완료")
+              .setDescription("서버의 긴급보안 모드가 해제되었어요! 이제 모든 기능(초대장 생성, 봇 DM)이 평화로운 일반 모드로 원복됩니다. 🌸")
+              .setColor(SUCCESS_COLOR)
+              .setTimestamp();
+            return interaction.reply({ embeds: [embed] });
+          });
+        }
+
+        else if (subcommand === '상태') {
+          db.get("SELECT invite_block_until, dm_block_until FROM server_emergency_security WHERE guild_id = ?", [guildId], (err, row) => {
+            if (err) {
+              console.error(err);
+              return interaction.reply({ content: "❌ 상태를 조회하는 과정에서 에러가 발생했습니다.", ephemeral: true });
+            }
+
+            const now = new Date();
+            let inviteStatus = "⚪ 비활성 (안전)";
+            let dmStatus = "⚪ 비활성 (안전)";
+
+            if (row) {
+              if (row.invite_block_until) {
+                const until = new Date(row.invite_block_until);
+                if (until > now) {
+                  const diff = Math.ceil((until - now) / 60000);
+                  inviteStatus = `🔴 **작동 중 (남은 시간: ${diff}분)**`;
+                }
+              }
+              if (row.dm_block_until) {
+                const until = new Date(row.dm_block_until);
+                if (until > now) {
+                  const diff = Math.ceil((until - now) / 60000);
+                  dmStatus = `🔴 **작동 중 (남은 시간: ${diff}분)**`;
+                }
+              }
+            }
+
+            const embed = new EmbedBuilder()
+              .setTitle("🚨 현재 긴급 보안 태세 상태")
+              .setDescription("현재 서버에 기동 중인 긴급 보안 작동 여부입니다.")
+              .addFields(
+                { name: "🛡️ 초대 링크 생성 차단", value: inviteStatus, inline: true },
+                { name: "💬 봇 알림용 DM 차단", value: dmStatus, inline: true }
+              )
+              .setColor(MAIN_COLOR)
+              .setTimestamp();
+
+            return interaction.reply({ embeds: [embed] });
+          });
+        }
+      }
     }
   ],
   listeners: {
@@ -569,6 +701,53 @@ module.exports = {
           .setColor(MAIN_COLOR);
         await message.channel.send({ embeds: [embed] }).catch(console.error);
       }
+    },
+
+    async inviteCreate(client, invite) {
+      if (!invite.guild) return;
+      const guildId = invite.guild.id.toString();
+
+      db.get("SELECT invite_block_until FROM server_emergency_security WHERE guild_id = ?", [guildId], async (err, row) => {
+        if (row && row.invite_block_until) {
+          const until = new Date(row.invite_block_until);
+          if (until > new Date()) {
+            try {
+              await invite.delete("🚨 긴급 보안 태세 가동으로 인한 초대 링크 생성 차단");
+              
+              // Log to log_channel if setup
+              db.get("SELECT channels FROM log_settings WHERE guild_id = ?", [guildId], async (errLog, logRow) => {
+                if (!errLog && logRow && logRow.channels) {
+                  try {
+                    const channels = JSON.parse(logRow.channels);
+                    // Use new log_channel or fallback to log_chat/log_update
+                    const logChannelData = channels['log_channel'] || channels['log_chat'] || channels['log_update'];
+                    if (logChannelData && logChannelData.id) {
+                      let logChannel = client.channels.cache.get(logChannelData.id) || await client.channels.fetch(logChannelData.id).catch(() => null);
+                      if (logChannel) {
+                        const embed = new EmbedBuilder()
+                          .setTitle("🚨 긴급 보안 통제: 초대 링크 삭제")
+                          .setDescription(`서버 내에서 새로운 초대 링크가 생성되었으나, **긴급 보안 태세**가 작동 중이므로 자동 소멸 차단 처리되었어요!`)
+                          .addFields(
+                            { name: "초대 코드", value: `\`${invite.code}\``, inline: true },
+                            { name: "생성자", value: invite.inviter ? invite.inviter.toString() : "알 수 없음", inline: true },
+                            { name: "보안 상태", value: "🔴 초대 차단 작동 중", inline: true }
+                          )
+                          .setColor(0xEF4444)
+                          .setTimestamp();
+                        await logChannel.send({ embeds: [embed] }).catch(() => null);
+                      }
+                    }
+                  } catch (eJson) {
+                    console.error(eJson);
+                  }
+                }
+              });
+            } catch (delErr) {
+              console.error("Failed to delete invite under emergency lockdown:", delErr);
+            }
+          }
+        }
+      });
     }
   }
 };
